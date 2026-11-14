@@ -280,3 +280,53 @@ export async function getMoveMyCarRecommendation(locationId: number, signal?: Ab
     signal,
   }))
 }
+
+export interface FamilyPlanPayload {
+  meeting_place: string
+  emergency_contact: string
+  notes: string
+  water_ready: boolean
+  medication_ready: boolean
+  documents_ready: boolean
+  evacuation_route_ready: boolean
+}
+
+export interface FloodReport {
+  id: number
+  address: string
+  description: string
+  observed_at: string
+  created_at: string
+  latitude: number
+  longitude: number
+  verification_status: 'unverified' | 'verified' | 'rejected'
+}
+
+const familyPlanUrl = `${apiBaseUrl}/api/v1/family-plan/`
+const reportsUrl = `${apiBaseUrl}/api/v1/reports/`
+
+export async function getFamilyPlan(): Promise<FamilyPlanPayload> {
+  return readResponse<FamilyPlanPayload>(await fetch(familyPlanUrl, { headers: await privateHeaders() }))
+}
+
+export async function saveFamilyPlan(plan: FamilyPlanPayload): Promise<FamilyPlanPayload> {
+  return readResponse<FamilyPlanPayload>(await fetch(familyPlanUrl, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json', ...await privateHeaders() },
+    body: JSON.stringify(plan),
+  }))
+}
+
+export async function getFloodReports(): Promise<FloodReport[]> {
+  return readResponse<FloodReport[]>(await fetch(reportsUrl, { headers: await privateHeaders() }))
+}
+
+export async function createFloodReport(payload: { address: string; description: string; observed_at: string }): Promise<FloodReport> {
+  return readResponse<FloodReport>(await fetch(reportsUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...await privateHeaders() },
+    body: JSON.stringify(payload),
+  }))
+}
+
+export async function deleteFloodReport(id: number): Promise<void> {
+  return readResponse<void>(await fetch(`${reportsUrl}${id}`, { method: 'DELETE', headers: await privateHeaders() }))
+}
