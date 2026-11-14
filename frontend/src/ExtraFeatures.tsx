@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { createFloodReport, deleteFloodReport, getFamilyPlan, getFloodReports, saveFamilyPlan, type FamilyPlanPayload, type FloodReport, type AddressLookupResult } from './api'
 import { subscribeAuth } from './auth'
 
@@ -7,7 +7,7 @@ const defaultPlan: FamilyPlanPayload = {
   water_ready: false, medication_ready: false, documents_ready: false, evacuation_route_ready: false,
 }
 
-function FeatureShell({ eyebrow, title, children }: { eyebrow: string; title: string; children: React.ReactNode }) {
+function FeatureShell({ eyebrow, title, children }: { eyebrow: string; title: string; children: ReactNode }) {
   return (
     <main className="w-full px-5 py-7 sm:px-8 lg:py-10">
       <div className="mx-auto max-w-4xl">
