@@ -70,8 +70,8 @@ def test_move_car_cannot_offer_another_users_location():
     class Weather:
         active_alerts = []
     with TestClient(app) as client:
-        with patch("app.move_car.service.arcgis_fema_flood_zones", new=AsyncMock(return_value=(Zone(), {}, "fema.gov"))), \\
-             patch("app.move_car.service.get_tides", new=AsyncMock(return_value=Tides())), \\
+        with patch("app.move_car.service.arcgis_fema_flood_zones", new=AsyncMock(return_value=(Zone(), {}, "fema.gov"))), \
+             patch("app.move_car.service.get_tides", new=AsyncMock(return_value=Tides())), \
              patch("app.move_car.service.get_weather_for_coordinates", new=AsyncMock(return_value=Weather())):
             response = client.post("/api/v1/move-car/recommend", json={"location_id": 1})
     assert response.status_code == 200
