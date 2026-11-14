@@ -50,6 +50,8 @@ def init_db() -> None:
         for column in ("latitude", "longitude"):
             if not _column_exists(session, "savedlocation", column):
                 session.exec(text(f"ALTER TABLE savedlocation ADD COLUMN {column} DOUBLE PRECISION"))
+        if not _column_exists(session, "savedlocation", "user_id"):
+            session.exec(text("ALTER TABLE savedlocation ADD COLUMN user_id VARCHAR(36)"))
         session.commit()
 
 
