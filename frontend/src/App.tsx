@@ -3,6 +3,8 @@ import { MapContainer, Marker, Popup, TileLayer, ZoomControl } from 'react-leafl
 import L from 'leaflet'
 import { askFloodGuard, createSavedLocation, deleteSavedLocation, fetchFEMAOverlay, getMoveMyCarRecommendation, getSavedLocations, lookupAddress, lookupTides, lookupWeather, type AddressLookupResult, type AskFloodGuardGrounding, type AskFloodGuardResult, type MoveMyCarResult, type OwnerType, type SavedLocation, type TidesResult, type WeatherResult } from './api'
 import { features, type FeatureId } from './features'
+import { subscribeAuth } from './auth'
+import { FamilyFloodPlanView, ReportFloodingView, FloodMemoryView, FloodInsuranceView } from './ExtraFeatures'
 
 // Fix Leaflet default marker icon path for Vite bundling
 const defaultIcon = L.icon({
@@ -39,6 +41,12 @@ function formatFEMAAttribute(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—'
   if (typeof value === 'number') return Number.isInteger(value) ? value.toString() : value.toFixed(2)
   return String(value)
+}
+
+// GIS service attributes are untrusted text, even when sourced from a government server.
+// Leaflet popup.setContent() accepts raw HTML, so escape every interpolated attribute.
+function escapeHTML(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char)
 }
 
 interface MapMarkerData {
@@ -109,9 +117,9 @@ function FEMAOverlayLayer({ map, enabled }: { map: L.Map; enabled: boolean }) {
             const props = (feature.properties ?? {}) as Record<string, unknown>
             const popup = L.popup({ className: 'fema-popup' }).setContent(`
               <div class="text-sm">
-                <p class="font-semibold text-white mb-1">FEMA Flood Zone: ${formatFEMAAttribute(props.FZONE)}</p>
-                <p class="text-slate-300">Zone subtype: ${formatFEMAAttribute(props.ZONESUBTY)}</p>
-                <p class="text-slate-300">Elevation: ${formatFEMAAttribute(props.ELEV)} ft</p>
+                <p class="font-semibold text-white mb-1">FEMA Flood Zone: ${escapeHTML(formatFEMAAttribute(props.FZONE))}</p>
+                <p class="text-slate-300">Zone subtype: ${escapeHTML(formatFEMAAttribute(props.ZONESUBTY))}</p>
+                <p class="text-slate-300">Elevation: ${escapeHTML(formatFEMAAttribute(props.ELEV))} ft</p>
                 <p class="text-slate-500 mt-2 text-xs">Mapped flood hazard, not real-time flooding.</p>
               </div>
             `)
@@ -262,7 +270,9 @@ function LocationManager({ ownerType }: { ownerType: OwnerType }) {
     }
   }
 
-  useEffect(() => { void load() }, [ownerType])
+  const [authVersion, setAuthVersion] = useState(0)
+  useEffect(() => subscribeAuth(() => { setLocations([]); setAuthVersion(v => v + 1) }), [])
+  useEffect(() => { void load() }, [ownerType, authVersion])
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -577,6 +587,15 @@ function MoveMyCarView({ onOpenVehicles }: { onOpenVehicles: () => void }) {
   const [assessing, setAssessing] = useState(false)
   const [assessError, setAssessError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
+  const [authVersion, setAuthVersion] = useState(0)
+  useEffect(() => subscribeAuth(() => {
+    abortRef.current?.abort()
+    setVehicles([])
+    setSelectedId(null)
+    setResult(null)
+    setLoadError('')
+    setAuthVersion(v => v + 1)
+  }), [])
 
   useEffect(() => {
     let cancelled = false
@@ -586,7 +605,7 @@ function MoveMyCarView({ onOpenVehicles }: { onOpenVehicles: () => void }) {
       .catch((err) => { if (!cancelled) setLoadError(err instanceof Error ? err.message : 'Unable to load saved vehicles.') })
       .finally(() => { if (!cancelled) setLoadingVehicles(false) })
     return () => { cancelled = true }
-  }, [])
+  }, [authVersion])
 
   async function assess() {
     if (selectedId == null || assessing) return
@@ -1095,6 +1114,11 @@ function AddressSearch({ onResult }: { onResult?: (result: AddressLookupResult) 
 function Dashboard({ setActive, onAddressResult }: { setActive: (id: FeatureId) => void; onAddressResult: (result: AddressLookupResult) => void }) {
   const [mapResult, setMapResult] = useState<AddressLookupResult | null>(null)
   const [savedLocations, setSavedLocations] = useState<SavedLocation[]>([])
+  const [authVersion, setAuthVersion] = useState(0)
+  useEffect(() => subscribeAuth(() => {
+    setSavedLocations([]) // immediately clear previous user's private map markers
+    setAuthVersion(v => v + 1)
+  }), [])
 
   useEffect(() => {
     let cancelled = false
@@ -1105,7 +1129,7 @@ function Dashboard({ setActive, onAddressResult }: { setActive: (id: FeatureId) 
       if (!cancelled) setSavedLocations([...properties, ...vehicles])
     })
     return () => { cancelled = true }
-  }, [])
+  }, [authVersion])
 
   function handleAddressResult(result: AddressLookupResult) {
     setMapResult(result)
@@ -1391,7 +1415,15 @@ function App() {
                       ? <MoveMyCarView onOpenVehicles={() => changeActive('vehicle')} />
                       : active === 'king-tide'
                         ? <KingTideWatchView />
-                        : <Placeholder id={active} />}
+                        : active === 'family-plan'
+                          ? <FamilyFloodPlanView />
+                          : active === 'report'
+                            ? <ReportFloodingView />
+                            : active === 'memory'
+                              ? <FloodMemoryView />
+                              : active === 'insurance'
+                                ? <FloodInsuranceView locationResult={addressSearchResult} />
+                                : <Placeholder id={active} />}
 
             <footer className="mt-2 mb-6 w-full px-5 pb-6 text-sm text-slate-500 sm:px-8 lg:px-0">
               FloodGuard Miami · Preparedness information, not an emergency service.

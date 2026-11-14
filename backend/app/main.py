@@ -12,6 +12,8 @@ from .saved_locations.routes import router as saved_locations_router
 from .address_lookup.routes import router as address_lookup_router
 from .weather.routes import router as weather_router
 from .tides.routes import router as tides_router
+from .family_plan.routes import router as family_plan_router
+from .flood_reports.routes import router as flood_reports_router
 
 
 @asynccontextmanager
@@ -47,6 +49,8 @@ def create_app() -> FastAPI:
     app.include_router(tides_router, prefix="/api/v1/tides", tags=["tides"])
     app.include_router(ai_router, prefix="/api/v1/ai", tags=["ask floodguard"])
     app.include_router(move_car_router, prefix="/api/v1/move-car", tags=["move my car"])
+    app.include_router(family_plan_router, prefix="/api/v1/family-plan", tags=["family flood plan"])
+    app.include_router(flood_reports_router, prefix="/api/v1/reports", tags=["private flood reports"])
     return app
 
 

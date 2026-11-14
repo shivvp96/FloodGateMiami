@@ -173,12 +173,14 @@ def test_move_car_excludes_open_water_unmatched_unclassified_candidates() -> Non
             _insert(session, owner_type="vehicle", label="Beach lot", address="C1", latitude=25.8, longitude=-80.1)
             _insert(session, owner_type="vehicle", label="Unknown lot", address="C2", latitude=25.85, longitude=-80.15)
             _insert(session, owner_type="vehicle", label="Valid garage", address="C3", latitude=25.9, longitude=-80.3)
+            _insert(session, owner_type="vehicle", label="Unknown Zone D", address="C4", latitude=25.82, longitude=-80.22)
 
         zone_map = {
             (25.775, -80.196): "AE",        # vehicle: high risk
             (25.8, -80.1): "OPEN WATER",    # excluded
             (25.85, -80.15): "",            # excluded (empty/unmatched)
-            (25.9, -80.3): "X",             # valid low-risk candidate
+            (25.9, -80.3): "X",             # valid lower mapped hazard candidate
+            (25.82, -80.22): "D",           # undetermined risk, not a safer location
         }
 
         async def _fema(lat, lon, *, config):

@@ -3,6 +3,7 @@ from typing import Optional
 
 from ..address_lookup.service import LookupConfig, arcgis_fema_flood_zones
 from ..saved_locations.models import SavedLocation
+from ..auth import LOCAL_USER_ID
 from ..tides.service import get_tides
 from ..weather.service import get_weather_for_coordinates
 from .models import MoveMyCarCandidate, MoveMyCarRequest, MoveMyCarResponse, RiskFactor
@@ -20,6 +21,7 @@ _HIGH_RISK_ZONES = {"A", "AE", "AH", "AO", "VE", "V"}
 # Candidate zones that are never surfaced as recommendations — either not
 # land-based flood zones, or lacking a definitive classification.
 _EXCLUDED_CANDIDATE_ZONES = {"OPEN WATER", "", None, "UNMATCHED", "UNCLASSIFIED"}
+_LOWER_MAPPED_HAZARD_ZONES = {"X"}  # Zone D is undetermined, not evidence of low hazard
 
 
 def _config_from_env() -> LookupConfig:
@@ -36,14 +38,14 @@ def _config_from_env() -> LookupConfig:
     )
 
 
-async def assess_and_recommend(request: MoveMyCarRequest, session) -> MoveMyCarResponse:
+async def assess_and_recommend(request: MoveMyCarRequest, session, *, user_id: str) -> MoveMyCarResponse:
     """Assess flood risk for a stored vehicle location using only live official data."""
     import asyncio
 
     now = datetime.now(UTC)
 
     vehicle = session.get(SavedLocation, request.location_id)
-    if vehicle is None or vehicle.owner_type != "vehicle":
+    if vehicle is None or vehicle.owner_type != "vehicle" or not (vehicle.user_id == user_id or (user_id == LOCAL_USER_ID and vehicle.user_id is None)):
         return MoveMyCarResponse(
             status="no_location",
             location_id=request.location_id,
@@ -167,7 +169,7 @@ async def assess_and_recommend(request: MoveMyCarRequest, session) -> MoveMyCarR
         loc for loc in session.exec(
             _select(SavedLocation).where(SavedLocation.latitude != None, SavedLocation.longitude != None)  # noqa: E711
         ).all()
-        if loc.id != vehicle.id
+        if loc.id != vehicle.id and (loc.user_id == user_id or (user_id == LOCAL_USER_ID and loc.user_id is None))
     ]
 
     candidates: list[MoveMyCarCandidate] = []
@@ -186,7 +188,9 @@ async def assess_and_recommend(request: MoveMyCarRequest, session) -> MoveMyCarR
 
         cand_zone = normalized
         vehicle_zone = fema_zone.upper() if fema_zone else None
-        lower_risk = cand_zone not in _HIGH_RISK_ZONES and vehicle_zone in _HIGH_RISK_ZONES
+        lower_risk = cand_zone in _LOWER_MAPPED_HAZARD_ZONES and vehicle_zone in _HIGH_RISK_ZONES
+        if not lower_risk:
+            continue  # Only show a strictly lower mapped hazard alternative.
         note = (
             f"FEMA zone {designation or 'not mapped'} — lower mapped flood hazard than your current spot."
             if lower_risk
@@ -206,7 +210,7 @@ async def assess_and_recommend(request: MoveMyCarRequest, session) -> MoveMyCarR
         status="ok",
         location_id=request.location_id,
         vehicle_label=vehicle.label,
-        recommendation="consider_moving" if candidates else "consider_moving",
+        recommendation="consider_moving",
         risk_factors=risk_factors,
         candidates=candidates,
         disclaimer=DISCLAIMER,

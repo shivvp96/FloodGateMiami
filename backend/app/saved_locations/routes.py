@@ -2,39 +2,22 @@ import os
 from datetime import UTC, datetime
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Header, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlmodel import Session, select
 
 from ..address_lookup.service import LookupConfig, census_geocode
+from ..auth import LOCAL_USER_ID, get_current_user_id
 from ..db import get_session
 from .models import SavedLocation, SavedLocationCreate, SavedLocationRead
 
 router = APIRouter()
 
 
-def _require_api_key(x_api_key: str | None = Header(default=None)) -> None:
-    import os
-
-    # For production/hackathon MVP safety, saved-location CRUD must never be public.
-    # Use APP_ENV as the primary switch; fall back to Vercel env detection for compatibility.
-    app_env = os.environ.get("APP_ENV", "development").lower()
-    is_production = app_env in {"production", "staging"}
-    is_vercel = is_production or bool(os.environ.get("VERCEL") or os.environ.get("Vercel"))
-
-    expected = os.environ.get("SAVED_LOCATIONS_API_KEY")
-
-    # If credentials are not configured, deny in production.
-    if is_vercel:
-        if not expected:
-            raise HTTPException(status_code=503, detail="saved-locations auth not configured")
-        if not x_api_key or x_api_key != expected:
-            raise HTTPException(status_code=401, detail="unauthorized")
-        return
-
-    # Local dev / non-Vercel: preserve existing behavior (allow without a configured key).
-    if expected:
-        if not x_api_key or x_api_key != expected:
-            raise HTTPException(status_code=401, detail="unauthorized")
+def _visible_to_user(user_id: str):
+    # Unowned legacy rows remain visible only in local development, never in production.
+    if user_id == LOCAL_USER_ID:
+        return (SavedLocation.user_id == user_id) | (SavedLocation.user_id == None)  # noqa: E711
+    return SavedLocation.user_id == user_id
 
 
 def _lookup_config() -> LookupConfig:
@@ -63,7 +46,7 @@ def _validate_coords(lat: float | None, lon: float | None) -> tuple[float | None
 async def create_location(
     payload: SavedLocationCreate,
     session: Session = Depends(get_session),
-    _: None = Depends(_require_api_key),
+    user_id: str = Depends(get_current_user_id),
 ) -> SavedLocation:
     label = payload.label.strip()
     address = payload.address.strip()
@@ -84,6 +67,7 @@ async def create_location(
 
     location = SavedLocation(
         owner_type=payload.owner_type,
+        user_id=user_id,
         label=label,
         address=address,
         latitude=lat,
@@ -100,9 +84,9 @@ async def create_location(
 def list_locations(
     owner_type: str | None = Query(default=None),
     session: Session = Depends(get_session),
-    _: None = Depends(_require_api_key),
+    user_id: str = Depends(get_current_user_id),
 ) -> list[SavedLocation]:
-    statement = select(SavedLocation).order_by(SavedLocation.created_at.desc())
+    statement = select(SavedLocation).where(_visible_to_user(user_id)).order_by(SavedLocation.created_at.desc())
     if owner_type:
         if owner_type not in {"property", "vehicle"}:
             raise HTTPException(status_code=422, detail="owner_type must be property or vehicle")
@@ -114,10 +98,10 @@ def list_locations(
 def delete_location(
     location_id: int,
     session: Session = Depends(get_session),
-    _: None = Depends(_require_api_key),
+    user_id: str = Depends(get_current_user_id),
 ) -> Response:
     location = session.get(SavedLocation, location_id)
-    if location is None:
+    if location is None or not (location.user_id == user_id or (user_id == LOCAL_USER_ID and location.user_id is None)):
         raise HTTPException(status_code=404, detail="saved location not found")
     session.delete(location)
     session.commit()
