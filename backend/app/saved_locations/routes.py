@@ -1,6 +1,11 @@
+import os
+from datetime import UTC, datetime
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, Response, status
 from sqlmodel import Session, select
 
+from ..address_lookup.service import LookupConfig, census_geocode
 from ..db import get_session
 from .models import SavedLocation, SavedLocationCreate, SavedLocationRead
 
@@ -32,24 +37,58 @@ def _require_api_key(x_api_key: str | None = Header(default=None)) -> None:
             raise HTTPException(status_code=401, detail="unauthorized")
 
 
+def _lookup_config() -> LookupConfig:
+    return LookupConfig(
+        census_base_url=os.environ.get("CENSUS_GEOCODER_BASE_URL", "https://geocoding.geo.census.gov"),
+        arcgis_flood_zones_url=os.environ.get(
+            "ARCGIS_FEMA_FLOOD_ZONES_URL",
+            "https://gisweb.miamidade.gov/arcgis/rest/services/EnerGov/MD_LandMgtViewer/MapServer/63/query",
+        ),
+        request_timeout_s=float(os.environ.get("LOOKUP_REQUEST_TIMEOUT_S", "8")),
+        cache_ttl_s=int(os.environ.get("LOOKUP_CACHE_TTL_S", "300")),
+    )
 
-def _clean(value: str, field: str) -> str:
-    cleaned = value.strip()
-    if not cleaned:
-        raise HTTPException(status_code=422, detail=f"{field} must not be blank")
-    return cleaned
+
+def _validate_coords(lat: float | None, lon: float | None) -> tuple[float | None, float | None]:
+    if lat is None or lon is None:
+        return None, None
+    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+        raise HTTPException(status_code=422, detail="latitude/longitude out of range")
+    if lat == 0 and lon == 0:
+        raise HTTPException(status_code=422, detail="coordinates cannot both be zero")
+    return lat, lon
 
 
 @router.post("/", response_model=SavedLocationRead, status_code=status.HTTP_201_CREATED)
-def create_location(
+async def create_location(
     payload: SavedLocationCreate,
     session: Session = Depends(get_session),
     _: None = Depends(_require_api_key),
 ) -> SavedLocation:
+    label = payload.label.strip()
+    address = payload.address.strip()
+    if not label or not address:
+        raise HTTPException(status_code=422, detail="label and address must not be blank")
+
+    # Geocode via the official Census geocoder so stored coordinates are real.
+    # If the geocoder cannot confidently match the address, reject the save rather
+    # than persisting an unusable location.
+    try:
+        _matched, coords, score = await census_geocode(address, config=_lookup_config())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="address could not be geocoded; check the address and try again") from exc
+    except (httpx.HTTPError, httpx.TimeoutException) as exc:
+        raise HTTPException(status_code=503, detail="geocoding service unavailable; try again shortly") from exc
+
+    lat, lon = _validate_coords(coords.latitude, coords.longitude)
+
     location = SavedLocation(
         owner_type=payload.owner_type,
-        label=_clean(payload.label, "label"),
-        address=_clean(payload.address, "address"),
+        label=label,
+        address=address,
+        latitude=lat,
+        longitude=lon,
+        created_at=datetime.now(UTC),
     )
     session.add(location)
     session.commit()

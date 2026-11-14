@@ -2,6 +2,7 @@ export type FeatureId =
   | 'dashboard'
   | 'property'
   | 'vehicle'
+  | 'move-car'
   | 'weather'
   | 'report'
   | 'ai'
@@ -14,9 +15,10 @@ export const features: Array<{ id: FeatureId; label: string; icon: string; descr
   { id: 'dashboard', label: 'Dashboard', icon: '⌂', description: 'Your Miami flood-readiness overview.' },
   { id: 'property', label: 'My Property', icon: '⌂', description: 'Save the places you protect.' },
   { id: 'vehicle', label: 'My Vehicle', icon: '▣', description: 'Keep important parking locations ready.' },
+  { id: 'move-car', label: 'Move My Car', icon: '⚑', description: 'Evidence-based flood-risk advisory for saved vehicles.' },
   { id: 'weather', label: 'Tide & Weather', icon: '≈', description: 'Live NWS forecast, alerts, and NOAA tide data.' },
   { id: 'report', label: 'Report Flooding', icon: '!', description: 'Photo and incident reports arrive in a later phase.' },
-  { id: 'ai', label: 'Ask FloodGuard AI', icon: '✦', description: 'Personalized AI guidance arrives in Phase 3.' },
+  { id: 'ai', label: 'Ask FloodGuard AI', icon: '✦', description: 'Grounded flood-safety answers from live FEMA, NWS, and NOAA data.' },
   { id: 'insurance', label: 'Flood Insurance', icon: '◒', description: 'Insurance guidance arrives in Phase 5.' },
   { id: 'king-tide', label: 'King Tide Watch', icon: '◔', description: 'Elevated predicted tides at Virginia Key (NOAA CO-OPS).' },
   { id: 'family-plan', label: 'Family Flood Plan', icon: '♡', description: 'Build a preparedness plan in Phase 5.' },

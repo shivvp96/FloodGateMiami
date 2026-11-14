@@ -123,6 +123,66 @@ export interface TidesResult {
   message: string | null
 }
 
+export interface AskFloodGuardGrounding {
+  fema: {
+    designation: string | null
+    zone_type: string | null
+    source: string
+  } | { error: string } | null
+  weather: {
+    status: string
+    flood_alert_count: number
+    active_alerts: Array<{ event: string; headline: string | null; severity: string | null; area: string | null }>
+    hourly_forecast_next_12h: Array<{ time: string; temp_f: number | null; forecast: string | null; precip_chance: number | null }>
+    message: string | null
+  } | { error: string } | null
+  tides: {
+    status: string
+    current_water_level: { timestamp: string; value: number; units: string } | null
+    next_high_tide: { timestamp: string; value: number; units: string } | null
+    king_tide_watch: { active: boolean; next_high_tides_above_threshold: unknown[] }
+    message: string | null
+  } | { error: string } | null
+}
+
+export interface AskFloodGuardResult {
+  status: 'ok' | 'unavailable'
+  answer: string
+  question: string
+  grounding: AskFloodGuardGrounding
+  model: string | null
+  retrieved_at: string
+  message: string | null
+}
+
+export interface MoveCarRiskFactor {
+  kind: 'fema_zone' | 'flood_alert' | 'high_tide' | 'king_tide'
+  detail: string
+  source: string
+}
+
+export interface MoveCarCandidate {
+  location_id: number
+  label: string
+  address: string
+  latitude: number
+  longitude: number
+  fema_zone: string | null
+  note: string
+}
+
+export interface MoveMyCarResult {
+  status: 'ok' | 'no_location' | 'insufficient_data'
+  location_id: number
+  vehicle_label: string | null
+  recommendation: 'consider_moving' | 'stay_parked' | 'no_recommendation'
+  risk_factors: MoveCarRiskFactor[]
+  candidates: MoveCarCandidate[]
+  disclaimer: string
+  retrieved_at: string
+  message: string | null
+}
+
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
 const baseUrl = `${apiBaseUrl}/api/v1/saved-locations/`
 const addressLookupUrl = `${apiBaseUrl}/api/v1/address/lookup`
@@ -133,9 +193,27 @@ const tidesLookupUrl = `${apiBaseUrl}/api/v1/tides/lookup`
 async function readResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const payload = await response.json().catch(() => null) as { detail?: string } | null
+    if (response.status === 401 || response.status === 503 && payload?.detail?.includes('auth not configured')) {
+      throw new SavedLocationsAuthError(payload?.detail)
+    }
     throw new Error(payload?.detail || `Request failed (${response.status})`)
   }
   return response.status === 204 ? (undefined as T) : response.json() as Promise<T>
+}
+
+/** Saved locations are protected by a server-side API key (SAVED_LOCATIONS_API_KEY).
+ * The browser never holds that key, so in production these calls fail closed and the
+ * UI shows this blocker instead of a generic error. Fix = deployment configuration,
+ * not frontend code. */
+export class SavedLocationsAuthError extends Error {
+  constructor(detail?: string) {
+    super(
+      detail?.includes('not configured')
+        ? 'Saved locations are disabled: SAVED_LOCATIONS_API_KEY is not configured on the backend deployment.'
+        : 'Saved locations require a server-side API key. The browser cannot (and must not) hold this key — configure SAVED_LOCATIONS_API_KEY on the backend deployment.',
+    )
+    this.name = 'SavedLocationsAuthError'
+  }
 }
 
 export async function getSavedLocations(ownerType: OwnerType): Promise<SavedLocation[]> {
@@ -172,4 +250,33 @@ export async function lookupWeather(latitude: number, longitude: number): Promis
 
 export async function lookupTides(): Promise<TidesResult> {
   return readResponse<TidesResult>(await fetch(tidesLookupUrl))
+}
+
+const aiAskUrl = `${apiBaseUrl}/api/v1/ai/ask`
+const moveCarUrl = `${apiBaseUrl}/api/v1/move-car/recommend`
+
+export async function askFloodGuard(params: {
+  question: string
+  latitude?: number | null
+  longitude?: number | null
+}, signal?: AbortSignal): Promise<AskFloodGuardResult> {
+  return readResponse<AskFloodGuardResult>(await fetch(aiAskUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      question: params.question,
+      latitude: params.latitude ?? null,
+      longitude: params.longitude ?? null,
+    }),
+    signal,
+  }))
+}
+
+export async function getMoveMyCarRecommendation(locationId: number, signal?: AbortSignal): Promise<MoveMyCarResult> {
+  return readResponse<MoveMyCarResult>(await fetch(moveCarUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ location_id: locationId }),
+    signal,
+  }))
 }

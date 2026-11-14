@@ -22,6 +22,9 @@ frontend/backend/
 
 # Scratch / inspection scripts
 backend/tests/inspect_*.py
+backend/tests/verify_*.py
+backend/tests/.gemini_key
+.mel/
 
 # Planning artifacts
 FloodGuard Miami- revised plan for approval.md

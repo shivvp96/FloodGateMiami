@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { MapContainer, Marker, Popup, TileLayer, ZoomControl } from 'react-leaflet'
 import L from 'leaflet'
-import { createSavedLocation, deleteSavedLocation, fetchFEMAOverlay, getSavedLocations, lookupAddress, lookupTides, lookupWeather, type AddressLookupResult, type OwnerType, type SavedLocation, type TidesResult, type WeatherResult } from './api'
+import { askFloodGuard, createSavedLocation, deleteSavedLocation, fetchFEMAOverlay, getMoveMyCarRecommendation, getSavedLocations, lookupAddress, lookupTides, lookupWeather, type AddressLookupResult, type AskFloodGuardGrounding, type AskFloodGuardResult, type MoveMyCarResult, type OwnerType, type SavedLocation, type TidesResult, type WeatherResult } from './api'
 import { features, type FeatureId } from './features'
 
 // Fix Leaflet default marker icon path for Vite bundling
@@ -382,6 +382,358 @@ function LocationManager({ ownerType }: { ownerType: OwnerType }) {
                   )}
           </section>
         </div>
+      </div>
+    </main>
+  )
+}
+
+function askContextSource(result: AddressLookupResult | null): string {
+  return result ? `${result.matched_address} (${result.coordinates.latitude.toFixed(4)}, ${result.coordinates.longitude.toFixed(4)})` : 'no address context — general Miami-Dade data'
+}
+
+function GroundingPanel({ grounding }: { grounding: AskFloodGuardGrounding }) {
+  if (!grounding) return null
+  const fema = grounding.fema && 'error' in grounding.fema ? null : grounding.fema
+  const weather = grounding.weather && 'error' in grounding.weather ? null : grounding.weather
+  const tides = grounding.tides && 'error' in grounding.tides ? null : grounding.tides
+  const errors = [grounding.fema, grounding.weather, grounding.tides]
+    .map((g) => (g && 'error' in g ? (g as { error: string }).error : null))
+    .filter(Boolean) as string[]
+
+  return (
+    <div className="mt-3 rounded-xl bg-ink-950 p-3 ring-1 ring-slate-700/70">
+      <p className="text-xs font-semibold uppercase tracking-wider text-tide-400">Grounded in verified data</p>
+      <ul className="mt-2 space-y-1 text-xs text-slate-300">
+        {fema ? (
+          <li>
+            FEMA zone: <span className="font-semibold text-white">{fema.designation ?? 'not mapped'}</span>
+            {fema.source ? <span className="text-slate-500"> · Miami-Dade ArcGIS FEMA layer</span> : null}
+          </li>
+        ) : null}
+        {weather ? (
+          <li>
+            NWS: <span className="font-semibold text-white">{weather.flood_alert_count} flood-related alert{weather.flood_alert_count === 1 ? '' : 's'}</span>
+            {weather.active_alerts[0] ? <span className="text-slate-400"> · latest: {weather.active_alerts[0].event}</span> : null}
+          </li>
+        ) : null}
+        {tides ? (
+          <li>
+            NOAA tides: <span className="font-semibold text-white">
+              {tides.next_high_tide ? `next high ${tides.next_high_tide.value.toFixed(2)} ft` : 'no upcoming high tide data'}
+            </span>
+            {tides.king_tide_watch?.active ? <span className="text-amber-300"> · king tide watch active</span> : null}
+          </li>
+        ) : null}
+        {errors.map((e) => (
+          <li key={e} className="text-amber-300">Partial data: {e}</li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+interface ChatMessage {
+  role: 'user' | 'assistant'
+  text: string
+  result?: AskFloodGuardResult
+}
+
+function AskFloodGuardView({ locationResult }: { locationResult: AddressLookupResult | null }) {
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [question, setQuestion] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const abortRef = useRef<AbortController | null>(null)
+  const listRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight })
+  }, [messages, loading])
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const trimmed = question.trim()
+    if (!trimmed || loading) return
+    if (abortRef.current) abortRef.current.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    setMessages((current) => [...current, { role: 'user', text: trimmed }])
+    setQuestion('')
+    setLoading(true)
+    setError('')
+    try {
+      const result = await askFloodGuard(
+        {
+          question: trimmed,
+          latitude: locationResult?.coordinates.latitude ?? null,
+          longitude: locationResult?.coordinates.longitude ?? null,
+        },
+        controller.signal,
+      )
+      if (controller.signal.aborted) return
+      setMessages((current) => [...current, { role: 'assistant', text: result.answer, result }])
+    } catch (err) {
+      if (controller.signal.aborted) return
+      setError(err instanceof Error ? err.message : 'Ask FloodGuard could not be reached.')
+    } finally {
+      if (!controller.signal.aborted) setLoading(false)
+    }
+  }
+
+  const unavailableCount = messages.filter((m) => m.result?.status === 'unavailable').length
+
+  return (
+    <main className="w-full px-5 py-7 sm:px-8 lg:py-10">
+      <div className="mx-auto w-full max-w-4xl">
+        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-tide-400">Phase 3</p>
+        <h1 className="mt-3 text-3xl font-bold tracking-tight text-white sm:text-4xl">Ask FloodGuard AI</h1>
+        <p className="mt-3 max-w-2xl text-slate-300">
+          Answers are generated server-side from live FEMA, NWS, and NOAA data — never simulated.
+          Context: {askContextSource(locationResult)}{locationResult ? '' : '. Search an address on the dashboard to personalize answers.'}
+        </p>
+
+        {error ? <p role="alert" className="mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">{error}</p> : null}
+        {unavailableCount > 0 ? (
+          <p className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+            The AI provider is not available (missing server-side API key or provider outage). Grounded government data remains accessible in the dashboard and weather sections.
+          </p>
+        ) : null}
+
+        <div
+          ref={listRef}
+          className="mt-6 h-[420px] space-y-4 overflow-y-auto rounded-3xl border border-slate-700/80 bg-ink-900 p-5"
+          aria-live="polite"
+          aria-label="Conversation"
+        >
+          {messages.length === 0 ? (
+            <div className="text-sm text-slate-400">
+              <p className="font-semibold text-slate-300">Try asking:</p>
+              <ul className="mt-2 space-y-1">
+                <li>“Is my area in a FEMA flood zone?”</li>
+                <li>“Are there any flood warnings right now?”</li>
+                <li>“When is the next high tide, and is a king tide watch active?”</li>
+              </ul>
+            </div>
+          ) : null}
+
+          {messages.map((message, index) => (
+            <div key={index} className={message.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
+              <div className={`max-w-[85%] rounded-2xl p-4 text-sm leading-6 ${message.role === 'user' ? 'bg-ocean-400 text-ink-950' : 'bg-ink-950 text-slate-200 ring-1 ring-slate-700/70'}`}>
+                <p className="whitespace-pre-wrap">{message.text}</p>
+                {message.role === 'assistant' && message.result ? (
+                  <>
+                    {message.result.status === 'ok' ? <GroundingPanel grounding={message.result.grounding} /> : null}
+                    {message.result.status === 'unavailable' && message.result.message ? (
+                      <p className="mt-2 text-xs text-amber-300">Status: {message.result.message}</p>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            </div>
+          ))}
+
+          {loading ? (
+            <div className="flex justify-start">
+              <div className="rounded-2xl bg-ink-950 p-4 text-sm text-slate-400 ring-1 ring-slate-700/70">
+                Gathering live FEMA, NWS, and NOAA data…
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <form onSubmit={submit} className="mt-4 flex flex-col gap-3 sm:flex-row">
+          <input
+            value={question}
+            onChange={(event) => setQuestion(event.target.value)}
+            required
+            minLength={3}
+            maxLength={600}
+            placeholder="Ask about flood zones, alerts, or tides…"
+            aria-label="Question for Ask FloodGuard"
+            className="min-w-0 flex-1 rounded-xl border border-slate-600 bg-ink-950 px-3 py-3 text-white outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-ocean-400"
+          />
+          <button
+            disabled={loading || question.trim().length < 3}
+            className="rounded-xl bg-ocean-400 px-5 py-3 font-semibold text-ink-950 hover:bg-ocean-300 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {loading ? 'Asking…' : 'Ask'}
+          </button>
+        </form>
+        <p className="mt-3 text-xs text-slate-500">
+          The AI key lives only on the server (LLM_API_KEY). Answers are grounded in official data; mapped zones are planning references, not real-time street-flood forecasts.
+        </p>
+      </div>
+    </main>
+  )
+}
+
+function MoveMyCarView({ onOpenVehicles }: { onOpenVehicles: () => void }) {
+  const [vehicles, setVehicles] = useState<SavedLocation[]>([])
+  const [loadingVehicles, setLoadingVehicles] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [result, setResult] = useState<MoveMyCarResult | null>(null)
+  const [assessing, setAssessing] = useState(false)
+  const [assessError, setAssessError] = useState('')
+  const abortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoadingVehicles(true)
+    getSavedLocations('vehicle')
+      .then((items) => { if (!cancelled) { setVehicles(items); if (items.length === 1) setSelectedId(items[0].id) } })
+      .catch((err) => { if (!cancelled) setLoadError(err instanceof Error ? err.message : 'Unable to load saved vehicles.') })
+      .finally(() => { if (!cancelled) setLoadingVehicles(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  async function assess() {
+    if (selectedId == null || assessing) return
+    if (abortRef.current) abortRef.current.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    setAssessing(true)
+    setAssessError('')
+    setResult(null)
+    try {
+      setResult(await getMoveMyCarRecommendation(selectedId, controller.signal))
+    } catch (err) {
+      if (!controller.signal.aborted) setAssessError(err instanceof Error ? err.message : 'Unable to assess this location.')
+    } finally {
+      if (!controller.signal.aborted) setAssessing(false)
+    }
+  }
+
+  return (
+    <main className="w-full px-5 py-7 sm:px-8 lg:py-10">
+      <div className="mx-auto w-full max-w-4xl">
+        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-tide-400">Phase 3</p>
+        <h1 className="mt-3 text-3xl font-bold tracking-tight text-white sm:text-4xl">Move My Car</h1>
+        <p className="mt-3 max-w-2xl text-slate-300">
+          Assesses your saved vehicle location against live FEMA zones, NWS flood alerts, and NOAA tide predictions.
+          Recommendations are evidence-based planning aids — never a guarantee that a route or parking spot is flood-safe.
+        </p>
+
+        {loadError ? <p role="alert" className="mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">{loadError}</p> : null}
+
+        {loadingVehicles ? <p className="mt-6 text-slate-400">Loading saved vehicles…</p> : null}
+
+        {!loadingVehicles && !loadError && vehicles.length === 0 ? (
+          <div className="mt-6 rounded-3xl border border-dashed border-slate-700 bg-ink-900 p-6 text-sm text-slate-300">
+            <p className="font-semibold text-white">No saved vehicles yet.</p>
+            <p className="mt-2">Save a parking location (with a real, geocodable Miami address) to get flood-risk assessments here.</p>
+            <button onClick={onOpenVehicles} className="mt-4 rounded-xl bg-ocean-400 px-4 py-2.5 font-semibold text-ink-950 hover:bg-ocean-300">
+              Open My Vehicle
+            </button>
+          </div>
+        ) : null}
+
+        {vehicles.length > 0 ? (
+          <div className="mt-6 grid gap-4 lg:grid-cols-2">
+            <section className="rounded-3xl border border-slate-700/80 bg-ink-900 p-5">
+              <h2 className="text-lg font-semibold text-white">Saved vehicles</h2>
+              <ul className="mt-3 space-y-2">
+                {vehicles.map((vehicle) => (
+                  <li key={vehicle.id}>
+                    <button
+                      onClick={() => setSelectedId(vehicle.id)}
+                      className={`w-full rounded-2xl p-4 text-left ring-1 transition ${selectedId === vehicle.id ? 'bg-sky-400/10 ring-ocean-400/40' : 'bg-ink-950 ring-slate-700/70 hover:bg-white/5'}`}
+                      aria-pressed={selectedId === vehicle.id}
+                    >
+                      <p className="font-semibold text-white">{vehicle.label}</p>
+                      <p className="mt-1 text-sm text-slate-400">{vehicle.address}</p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {vehicle.latitude != null && vehicle.longitude != null
+                          ? `Verified coordinates: ${vehicle.latitude.toFixed(4)}, ${vehicle.longitude.toFixed(4)}`
+                          : 'No verified coordinates — re-save with a geocodable address.'}
+                      </p>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <button
+                onClick={() => void assess()}
+                disabled={selectedId == null || assessing}
+                className="mt-4 w-full rounded-xl bg-ocean-400 px-4 py-3 font-semibold text-ink-950 hover:bg-ocean-300 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {assessing ? 'Assessing live risk…' : 'Assess flood risk'}
+              </button>
+            </section>
+
+            <section className="rounded-3xl border border-slate-700/80 bg-ink-900 p-5" aria-live="polite">
+              <h2 className="text-lg font-semibold text-white">Assessment</h2>
+
+              {assessError ? <p className="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">{assessError}</p> : null}
+              {assessing ? <p className="mt-3 text-sm text-slate-400">Fetching live FEMA, NWS, and NOAA data…</p> : null}
+
+              {!assessing && !result && !assessError ? (
+                <p className="mt-3 text-sm text-slate-400">Select a vehicle and run an assessment.</p>
+              ) : null}
+
+              {result ? (
+                <div className="mt-3 space-y-3">
+                  <div className={`rounded-2xl p-4 ring-1 ${
+                    result.status === 'ok' && result.recommendation === 'consider_moving'
+                      ? 'bg-rose-500/10 ring-rose-500/40'
+                      : result.status === 'ok' && result.recommendation === 'stay_parked'
+                        ? 'bg-emerald-500/5 ring-emerald-500/30'
+                        : 'bg-amber-500/10 ring-amber-500/40'
+                  }`}>
+                    <p className="text-sm text-slate-300">{result.vehicle_label ? `Vehicle: ${result.vehicle_label}` : `Location #${result.location_id}`}</p>
+                    <p className={`mt-1 text-lg font-bold ${
+                      result.recommendation === 'consider_moving' ? 'text-rose-200'
+                        : result.recommendation === 'stay_parked' ? 'text-emerald-200'
+                          : 'text-amber-200'
+                    }`}>
+                      {result.recommendation === 'consider_moving' ? 'Consider moving your car'
+                        : result.recommendation === 'stay_parked' ? 'No flood-risk indicators right now'
+                          : 'No recommendation'}
+                    </p>
+                    <p className="mt-1 text-xs uppercase tracking-wider text-slate-400">
+                      Status: {result.status === 'ok' ? 'verified data' : result.status === 'no_location' ? 'location not found' : 'insufficient data'}
+                    </p>
+                  </div>
+
+                  {result.message ? <p className="text-sm text-slate-300">{result.message}</p> : null}
+
+                  {result.risk_factors.length > 0 ? (
+                    <div>
+                      <p className="text-sm font-semibold text-white">Risk factors (verified sources)</p>
+                      <ul className="mt-2 space-y-2">
+                        {result.risk_factors.map((factor, i) => (
+                          <li key={i} className="rounded-xl bg-ink-950 p-3 text-sm text-slate-300 ring-1 ring-slate-700/70">
+                            <p><span className="font-semibold text-white">{factor.kind.replace('_', ' ')}</span> — {factor.detail}</p>
+                            <p className="mt-1 text-xs text-slate-500">Source: {factor.source}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {result.candidates.length > 0 ? (
+                    <div>
+                      <p className="text-sm font-semibold text-white">Alternative saved locations</p>
+                      <ul className="mt-2 space-y-2">
+                        {result.candidates.map((candidate) => (
+                          <li key={candidate.location_id} className="rounded-xl bg-ink-950 p-3 text-sm text-slate-300 ring-1 ring-slate-700/70">
+                            <p className="font-semibold text-white">{candidate.label}</p>
+                            <p className="mt-1">{candidate.address}</p>
+                            <p className="mt-1 text-xs text-slate-400">{candidate.note}</p>
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="mt-2 text-xs text-slate-500">Candidates are your other saved locations with verified coordinates and live-checked FEMA zones.</p>
+                    </div>
+                  ) : null}
+
+                  <p className="rounded-xl border border-slate-700 bg-ink-950 p-3 text-xs leading-5 text-slate-400">{result.disclaimer}</p>
+                  <p className="text-xs text-slate-500">Assessed {new Date(result.retrieved_at).toLocaleString()}</p>
+                </div>
+              ) : null}
+            </section>
+          </div>
+        ) : null}
       </div>
     </main>
   )
@@ -801,10 +1153,10 @@ function Dashboard({ setActive, onAddressResult }: { setActive: (id: FeatureId) 
             <section className="rounded-3xl border border-ocean-400/35 bg-[linear-gradient(180deg,rgba(56,189,248,.12),rgba(11,23,39,.9))] p-6 shadow-[0_10px_40px_rgba(0,0,0,.35)] flex flex-col">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ocean-300">Coming in Phase 3</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ocean-300">Phase 3 · Live</p>
                   <h2 className="mt-2 text-xl font-bold text-white">Ask FloodGuard AI</h2>
                   <p className="mt-2 text-sm leading-6 text-slate-300">
-                    Context-aware assessments grounded in your saved property and vehicle.
+                    Grounded flood-safety answers from live FEMA, NWS, and NOAA data.
                   </p>
                 </div>
                 <span className="grid h-11 w-11 place-items-center rounded-2xl bg-ocean-400/10 text-2xl text-ocean-300 ring-1 ring-ocean-400/20">
@@ -817,7 +1169,7 @@ function Dashboard({ setActive, onAddressResult }: { setActive: (id: FeatureId) 
                   onClick={() => setActive('ai')}
                   className="w-full rounded-2xl bg-ocean-400 px-4 py-3 font-semibold text-ink-950 hover:bg-ocean-300"
                 >
-                  Open AI section (Phase 3)
+                  Open Ask FloodGuard AI
                 </button>
               </div>
 
@@ -1033,9 +1385,13 @@ function App() {
                   ? addressSearchResult
                     ? <WeatherDetail result={addressSearchResult} />
                     : <WeatherPlaceholder />
-                  : active === 'king-tide'
-                    ? <KingTideWatchView />
-                    : <Placeholder id={active} />}
+                  : active === 'ai'
+                    ? <AskFloodGuardView locationResult={addressSearchResult} />
+                    : active === 'move-car'
+                      ? <MoveMyCarView onOpenVehicles={() => changeActive('vehicle')} />
+                      : active === 'king-tide'
+                        ? <KingTideWatchView />
+                        : <Placeholder id={active} />}
 
             <footer className="mt-2 mb-6 w-full px-5 pb-6 text-sm text-slate-500 sm:px-8 lg:px-0">
               FloodGuard Miami · Preparedness information, not an emergency service.

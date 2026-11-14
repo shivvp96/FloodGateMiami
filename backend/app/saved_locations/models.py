@@ -17,6 +17,8 @@ class SavedLocation(SQLModel, table=True):
     owner_type: str = Field(index=True)
     label: str
     address: str
+    latitude: float | None = Field(default=None)
+    longitude: float | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -25,4 +27,6 @@ class SavedLocationRead(SQLModel):
     owner_type: OwnerType
     label: str
     address: str
+    latitude: float | None = None
+    longitude: float | None = None
     created_at: datetime
