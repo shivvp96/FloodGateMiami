@@ -1114,6 +1114,11 @@ function AddressSearch({ onResult }: { onResult?: (result: AddressLookupResult) 
 function Dashboard({ setActive, onAddressResult }: { setActive: (id: FeatureId) => void; onAddressResult: (result: AddressLookupResult) => void }) {
   const [mapResult, setMapResult] = useState<AddressLookupResult | null>(null)
   const [savedLocations, setSavedLocations] = useState<SavedLocation[]>([])
+  const [authVersion, setAuthVersion] = useState(0)
+  useEffect(() => subscribeAuth(() => {
+    setSavedLocations([]) // immediately clear previous user's private map markers
+    setAuthVersion(v => v + 1)
+  }), [])
 
   useEffect(() => {
     let cancelled = false
@@ -1124,7 +1129,7 @@ function Dashboard({ setActive, onAddressResult }: { setActive: (id: FeatureId) 
       if (!cancelled) setSavedLocations([...properties, ...vehicles])
     })
     return () => { cancelled = true }
-  }, [])
+  }, [authVersion])
 
   function handleAddressResult(result: AddressLookupResult) {
     setMapResult(result)
