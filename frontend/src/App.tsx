@@ -3,6 +3,7 @@ import { MapContainer, Marker, Popup, TileLayer, ZoomControl } from 'react-leafl
 import L from 'leaflet'
 import { askFloodGuard, createSavedLocation, deleteSavedLocation, fetchFEMAOverlay, getMoveMyCarRecommendation, getSavedLocations, lookupAddress, lookupTides, lookupWeather, type AddressLookupResult, type AskFloodGuardGrounding, type AskFloodGuardResult, type MoveMyCarResult, type OwnerType, type SavedLocation, type TidesResult, type WeatherResult } from './api'
 import { features, type FeatureId } from './features'
+import { subscribeAuth } from './auth'
 
 // Fix Leaflet default marker icon path for Vite bundling
 const defaultIcon = L.icon({
@@ -262,7 +263,9 @@ function LocationManager({ ownerType }: { ownerType: OwnerType }) {
     }
   }
 
-  useEffect(() => { void load() }, [ownerType])
+  const [authVersion, setAuthVersion] = useState(0)
+  useEffect(() => subscribeAuth(() => { setLocations([]); setAuthVersion(v => v + 1) }), [])
+  useEffect(() => { void load() }, [ownerType, authVersion])
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -577,6 +580,15 @@ function MoveMyCarView({ onOpenVehicles }: { onOpenVehicles: () => void }) {
   const [assessing, setAssessing] = useState(false)
   const [assessError, setAssessError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
+  const [authVersion, setAuthVersion] = useState(0)
+  useEffect(() => subscribeAuth(() => {
+    abortRef.current?.abort()
+    setVehicles([])
+    setSelectedId(null)
+    setResult(null)
+    setLoadError('')
+    setAuthVersion(v => v + 1)
+  }), [])
 
   useEffect(() => {
     let cancelled = false
@@ -586,7 +598,7 @@ function MoveMyCarView({ onOpenVehicles }: { onOpenVehicles: () => void }) {
       .catch((err) => { if (!cancelled) setLoadError(err instanceof Error ? err.message : 'Unable to load saved vehicles.') })
       .finally(() => { if (!cancelled) setLoadingVehicles(false) })
     return () => { cancelled = true }
-  }, [])
+  }, [authVersion])
 
   async function assess() {
     if (selectedId == null || assessing) return
