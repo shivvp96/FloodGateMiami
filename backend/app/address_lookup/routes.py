@@ -8,8 +8,8 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlmodel import Session
 
 from ..db import get_session
-from .models import AddressLookupResponse
-from .service import LookupConfig, address_lookup
+from .models import AddressLookupResponse, FEMAOverlayResponse
+from .service import LookupConfig, address_lookup, arcgis_fema_overlay_bbox
 
 router = APIRouter()
 
@@ -57,3 +57,21 @@ async def address_lookup_endpoint(
     # Set request_id more usefully than a placeholder
     response.request_id = f"addr-lk-{uuid.uuid4().hex}"  # type: ignore[misc]
     return response
+
+
+@router.get("/overlay", response_model=FEMAOverlayResponse)
+async def fema_overlay_endpoint(
+    sw_lat: float = Query(..., ge=-90, le=90),
+    sw_lon: float = Query(..., ge=-180, le=180),
+    ne_lat: float = Query(..., ge=-90, le=90),
+    ne_lon: float = Query(..., ge=-180, le=180),
+) -> FEMAOverlayResponse:
+    # Reject degenerate or inverted bounds
+    if sw_lat >= ne_lat or sw_lon >= ne_lon:
+        raise HTTPException(status_code=422, detail="invalid_bounds")
+
+    config = _config_from_env()
+    try:
+        return await arcgis_fema_overlay_bbox(sw_lat, sw_lon, ne_lat, ne_lon, config=config)
+    except (httpx.HTTPError, httpx.TimeoutException):
+        raise HTTPException(status_code=503, detail="fema overlay service unavailable")

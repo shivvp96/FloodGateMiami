@@ -41,4 +41,21 @@ class AddressLookupError(SQLModel):
     detail: str
 
 
+class FEMAOverlayFeature(SQLModel):
+    type: str = "Feature"
+    geometry: dict
+    properties: dict
+    id: Optional[int] = None
+
+
+class FEMAOverlayResponse(SQLModel):
+    status: str  # ok, incomplete, unavailable
+    source_url: str
+    retrieved_at: datetime
+    features: list[FEMAOverlayFeature] = Field(default_factory=list)
+    total_returned: int
+    exceeded_transfer_limit: bool
+    message: Optional[str] = None
+
+
 OwnerSource = Literal["census_geocoder", "arcgis_fema_flood_zones"]

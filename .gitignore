@@ -16,3 +16,12 @@ frontend/dist/
 .env
 .env.*
 !.env.example
+
+# Misplaced backend tests under frontend/
+frontend/backend/
+
+# Scratch / inspection scripts
+backend/tests/inspect_*.py
+
+# Planning artifacts
+FloodGuard Miami- revised plan for approval.md

@@ -6,6 +6,9 @@ export interface SavedLocation {
   label: string
   address: string
   created_at: string
+  // Optional: present only if the backend starts returning geocoded coordinates.
+  latitude?: number | null
+  longitude?: number | null
 }
 
 export interface AddressLookupResult {
@@ -20,6 +23,23 @@ export interface AddressLookupResult {
   source_url: string
   retrieved_at: string
   available_zone_attributes: Record<string, string>
+}
+
+export interface FEMAOverlayFeature {
+  type: string
+  geometry: Record<string, unknown>
+  properties: Record<string, unknown>
+  id?: number | null
+}
+
+export interface FEMAOverlayResult {
+  status: 'ok' | 'incomplete' | 'unavailable'
+  source_url: string
+  retrieved_at: string
+  features: FEMAOverlayFeature[]
+  total_returned: number
+  exceeded_transfer_limit: boolean
+  message: string | null
 }
 
 export interface HourlyForecastPeriod {
@@ -106,6 +126,7 @@ export interface TidesResult {
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
 const baseUrl = `${apiBaseUrl}/api/v1/saved-locations/`
 const addressLookupUrl = `${apiBaseUrl}/api/v1/address/lookup`
+const addressOverlayUrl = `${apiBaseUrl}/api/v1/address/overlay`
 const weatherLookupUrl = `${apiBaseUrl}/api/v1/weather/lookup`
 const tidesLookupUrl = `${apiBaseUrl}/api/v1/tides/lookup`
 
@@ -135,6 +156,12 @@ export async function deleteSavedLocation(id: number): Promise<void> {
 
 export async function lookupAddress(address: string): Promise<AddressLookupResult> {
   return readResponse<AddressLookupResult>(await fetch(`${addressLookupUrl}?address=${encodeURIComponent(address)}`))
+}
+
+export async function fetchFEMAOverlay(bounds: { sw_lat: number; sw_lon: number; ne_lat: number; ne_lon: number }): Promise<FEMAOverlayResult> {
+  return readResponse<FEMAOverlayResult>(await fetch(
+    `${addressOverlayUrl}?sw_lat=${bounds.sw_lat}&sw_lon=${bounds.sw_lon}&ne_lat=${bounds.ne_lat}&ne_lon=${bounds.ne_lon}`,
+  ))
 }
 
 export async function lookupWeather(latitude: number, longitude: number): Promise<WeatherResult> {

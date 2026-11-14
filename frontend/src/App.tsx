@@ -1,6 +1,241 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import { createSavedLocation, deleteSavedLocation, getSavedLocations, lookupAddress, lookupTides, lookupWeather, type AddressLookupResult, type OwnerType, type SavedLocation, type TidesResult, type WeatherResult } from './api'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { MapContainer, Marker, Popup, TileLayer, ZoomControl } from 'react-leaflet'
+import L from 'leaflet'
+import { createSavedLocation, deleteSavedLocation, fetchFEMAOverlay, getSavedLocations, lookupAddress, lookupTides, lookupWeather, type AddressLookupResult, type OwnerType, type SavedLocation, type TidesResult, type WeatherResult } from './api'
 import { features, type FeatureId } from './features'
+
+// Fix Leaflet default marker icon path for Vite bundling
+const defaultIcon = L.icon({
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41],
+})
+L.Marker.prototype.options.icon = defaultIcon
+
+const MIAMI_CENTER: [number, number] = [25.7617, -80.1918]
+
+// Accessible, distinct colors for the most common FEMA Special Flood Hazard Area zones.
+const FEMA_ZONE_COLORS: Record<string, string> = {
+  AE: '#ef4444', // red
+  VE: '#f97316', // orange
+  AH: '#eab308', // yellow
+  AO: '#a855f7', // purple
+  A: '#22c55e',  // green
+  X: '#64748b',  // slate
+  D: '#94a3b8',  // light slate
+}
+
+function femaZoneColor(fzone: string | null): string {
+  if (!fzone) return FEMA_ZONE_COLORS.X
+  const normalized = fzone.trim().toUpperCase()
+  return FEMA_ZONE_COLORS[normalized] ?? '#f59e0b'
+}
+
+function formatFEMAAttribute(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—'
+  if (typeof value === 'number') return Number.isInteger(value) ? value.toString() : value.toFixed(2)
+  return String(value)
+}
+
+interface MapMarkerData {
+  id: string
+  lat: number
+  lon: number
+  label: string
+  address: string
+  femaZone: string | null
+}
+
+function FEMAOverlayLayer({ map, enabled }: { map: L.Map; enabled: boolean }) {
+  const [overlay, setOverlay] = useState<L.GeoJSON | null>(null)
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ok' | 'incomplete' | 'error'>('idle')
+  const [lastBoundsKey, setLastBoundsKey] = useState<string>('')
+  const abortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    if (!enabled) {
+      if (overlay) {
+        map.removeLayer(overlay)
+        setOverlay(null)
+      }
+      setStatus('idle')
+      return
+    }
+
+    const zoom = map.getZoom()
+    if (zoom < 11) {
+      setStatus('error')
+      return
+    }
+
+    const bounds = map.getBounds()
+    const sw = bounds.getSouthWest()
+    const ne = bounds.getNorthEast()
+    const boundsKey = `${sw.lat.toFixed(3)},${sw.lng.toFixed(3)}|${ne.lat.toFixed(3)},${ne.lng.toFixed(3)}`
+    if (boundsKey === lastBoundsKey && status === 'ok') return
+
+    if (abortRef.current) abortRef.current.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    async function load() {
+      setStatus('loading')
+      try {
+        const result = await fetchFEMAOverlay({
+          sw_lat: sw.lat,
+          sw_lon: sw.lng,
+          ne_lat: ne.lat,
+          ne_lon: ne.lng,
+        })
+        if (controller.signal.aborted) return
+
+        const geoJson = L.geoJSON(result.features as unknown as GeoJSON.FeatureCollection, {
+          style: (feature) => {
+            const props = (feature?.properties ?? {}) as Record<string, unknown>
+            const fzone = String(props.FZONE ?? '')
+            return {
+              color: femaZoneColor(fzone),
+              weight: 1.5,
+              opacity: 0.85,
+              fillColor: femaZoneColor(fzone),
+              fillOpacity: 0.35,
+            }
+          },
+          onEachFeature: (feature, layer) => {
+            const props = (feature.properties ?? {}) as Record<string, unknown>
+            const popup = L.popup({ className: 'fema-popup' }).setContent(`
+              <div class="text-sm">
+                <p class="font-semibold text-white mb-1">FEMA Flood Zone: ${formatFEMAAttribute(props.FZONE)}</p>
+                <p class="text-slate-300">Zone subtype: ${formatFEMAAttribute(props.ZONESUBTY)}</p>
+                <p class="text-slate-300">Elevation: ${formatFEMAAttribute(props.ELEV)} ft</p>
+                <p class="text-slate-500 mt-2 text-xs">Mapped flood hazard, not real-time flooding.</p>
+              </div>
+            `)
+            layer.bindPopup(popup)
+          },
+        })
+        geoJson.addTo(map)
+        if (overlay) map.removeLayer(overlay)
+        setOverlay(geoJson)
+        setLastBoundsKey(boundsKey)
+        setStatus(result.status === 'incomplete' ? 'incomplete' : 'ok')
+      } catch (err) {
+        if (controller.signal.aborted) return
+        setStatus('error')
+      }
+    }
+
+    void load()
+
+    return () => {
+      controller.abort()
+    }
+  }, [enabled, map])
+
+  if (!enabled) return null
+
+  return (
+    <div className="absolute bottom-3 left-3 z-[1000] flex max-w-xs flex-col gap-2">
+      <div className="rounded-xl border border-slate-700 bg-ink-950/95 p-3 shadow-lg">
+        <p className="text-xs font-semibold uppercase tracking-wider text-tide-400">FEMA zones</p>
+        <ul className="mt-2 space-y-1 text-xs text-slate-300">
+          <li className="flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-sm" style={{ backgroundColor: FEMA_ZONE_COLORS.AE }} /> AE — 1% annual chance</li>
+          <li className="flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-sm" style={{ backgroundColor: FEMA_ZONE_COLORS.VE }} /> VE — coastal 1% chance</li>
+          <li className="flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-sm" style={{ backgroundColor: FEMA_ZONE_COLORS.AH }} /> AH — shallow flooding</li>
+          <li className="flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-sm" style={{ backgroundColor: FEMA_ZONE_COLORS.AO }} /> AO — sheet flow</li>
+          <li className="flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-sm" style={{ backgroundColor: FEMA_ZONE_COLORS.A }} /> A — no BFE determined</li>
+          <li className="flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-sm" style={{ backgroundColor: FEMA_ZONE_COLORS.X }} /> X — minimal/low risk</li>
+        </ul>
+        <p className="mt-2 text-[10px] leading-tight text-slate-500">Source: Miami-Dade ArcGIS FEMA Flood Zones. Click a polygon for official attributes.</p>
+      </div>
+      {status === 'loading' ? <p className="rounded-lg bg-ink-950/90 px-3 py-1 text-xs text-slate-300">Loading overlay…</p> : null}
+      {status === 'incomplete' ? <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-xs text-amber-200">Coverage incomplete — zoom in to load more zones.</p> : null}
+      {status === 'error' ? <p className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1 text-xs text-rose-200">Overlay unavailable. Zoom in or try again.</p> : null}
+    </div>
+  )
+}
+
+function FloodGuardMap({ searchedResult, savedLocations }: { searchedResult: AddressLookupResult | null; savedLocations: SavedLocation[] }) {
+  const [map, setMap] = useState<L.Map | null>(null)
+  const [overlayEnabled, setOverlayEnabled] = useState(false)
+  const markers: MapMarkerData[] = []
+
+  if (searchedResult) {
+    markers.push({
+      id: 'searched',
+      lat: searchedResult.coordinates.latitude,
+      lon: searchedResult.coordinates.longitude,
+      label: 'Searched address',
+      address: searchedResult.matched_address,
+      femaZone: searchedResult.fema_flood_zone.designation,
+    })
+  }
+
+  // Render saved locations only when they carry usable coordinates; no geocoding here.
+  for (const location of savedLocations) {
+    if (location.latitude == null || location.longitude == null) continue
+    markers.push({
+      id: `saved-${location.id}`,
+      lat: location.latitude,
+      lon: location.longitude,
+      label: location.owner_type === 'property' ? `Saved property · ${location.label}` : `Saved vehicle · ${location.label}`,
+      address: location.address,
+      femaZone: null,
+    })
+  }
+
+  return (
+    <div
+      className="relative overflow-hidden rounded-2xl border border-slate-700"
+      aria-label="Interactive flood-zone map"
+      role="region"
+    >
+      <div className="absolute right-3 top-3 z-[1000]">
+        <button
+          type="button"
+          onClick={() => setOverlayEnabled((v) => !v)}
+          className={`rounded-xl px-3 py-2 text-xs font-semibold shadow-lg ring-1 ${overlayEnabled ? 'bg-ocean-400 text-ink-950 ring-ocean-300' : 'bg-ink-950/95 text-white ring-slate-600'}`}
+          aria-pressed={overlayEnabled}
+        >
+          {overlayEnabled ? 'Hide FEMA overlay' : 'Show FEMA overlay'}
+        </button>
+      </div>
+      <MapContainer
+        center={MIAMI_CENTER}
+        zoom={12}
+        scrollWheelZoom={false}
+        zoomControl={false}
+        className="h-80 w-full sm:h-96"
+        ref={setMap}
+      >
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
+        <ZoomControl position="topright" />
+        {markers.map((marker) => (
+          <Marker key={marker.id} position={[marker.lat, marker.lon]}>
+            <Popup>
+              <div>
+                <p className="font-semibold text-white">{marker.label}</p>
+                <p className="mt-1 text-slate-300">{marker.address}</p>
+                <p className="mt-2 text-slate-400">
+                  FEMA zone: <span className="font-semibold text-ocean-300">{marker.femaZone ?? 'No mapped feature'}</span>
+                </p>
+                <p className="mt-1 text-xs text-slate-500">Not a real-time street-flood forecast.</p>
+              </div>
+            </Popup>
+          </Marker>
+        ))}
+        {map ? <FEMAOverlayLayer map={map} enabled={overlayEnabled} /> : null}
+      </MapContainer>
+    </div>
+  )
+}
 
 function LocationManager({ ownerType }: { ownerType: OwnerType }) {
   const [locations, setLocations] = useState<SavedLocation[]>([])
@@ -180,30 +415,6 @@ function PremiumCard({ title, subtitle, children }: { title: string; subtitle?: 
       </header>
       <div className="mt-4">{children}</div>
     </section>
-  )
-}
-
-function MapPlaceholder() {
-  return (
-    <div
-      className="relative overflow-hidden rounded-3xl border border-slate-700 bg-[radial-gradient(circle_at_top_right,_rgba(56,189,248,.18),_transparent_45%)]"
-      aria-label="Map placeholder"
-      role="region"
-    >
-      <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(56,189,248,.08)_1px,transparent_1px),linear-gradient(0deg,rgba(56,189,248,.08)_1px,transparent_1px)] bg-[size:28px_28px] opacity-40" />
-      <div className="relative flex h-64 flex-col justify-between p-5 sm:h-80">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-tide-400">Map container</p>
-            <h3 className="mt-2 text-lg font-semibold text-white">Interactive flood-zone map (Phase 2)</h3>
-          </div>
-          <span className="rounded-full border border-ocean-400/40 bg-ink-900/60 px-3 py-1 text-xs font-semibold text-ocean-300">Leaflet ready</span>
-        </div>
-        <p className="max-w-xl text-sm leading-6 text-slate-300">
-          Phase 1 includes a visual container only—no live flood data is loaded yet.
-        </p>
-      </div>
-    </div>
   )
 }
 
@@ -530,6 +741,25 @@ function AddressSearch({ onResult }: { onResult?: (result: AddressLookupResult) 
 }
 
 function Dashboard({ setActive, onAddressResult }: { setActive: (id: FeatureId) => void; onAddressResult: (result: AddressLookupResult) => void }) {
+  const [mapResult, setMapResult] = useState<AddressLookupResult | null>(null)
+  const [savedLocations, setSavedLocations] = useState<SavedLocation[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([
+      getSavedLocations('property').catch(() => [] as SavedLocation[]),
+      getSavedLocations('vehicle').catch(() => [] as SavedLocation[]),
+    ]).then(([properties, vehicles]) => {
+      if (!cancelled) setSavedLocations([...properties, ...vehicles])
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  function handleAddressResult(result: AddressLookupResult) {
+    setMapResult(result)
+    onAddressResult(result)
+  }
+
   return (
     <main className="w-full px-5 py-7 sm:px-8 lg:pb-10 lg:pt-0">
       <div className="mx-auto w-full max-w-7xl">
@@ -599,13 +829,13 @@ function Dashboard({ setActive, onAddressResult }: { setActive: (id: FeatureId) 
 
           {/* Public Phase 2.1 address lookup */}
           <section>
-            <AddressSearch onResult={onAddressResult} />
+            <AddressSearch onResult={handleAddressResult} />
           </section>
 
           {/* Monitoring Map (full width) */}
           <section>
-            <PremiumCard title="Monitoring map" subtitle="Phase 2 interactive Leaflet map container (placeholder in Phase 1).">
-              <MapPlaceholder />
+            <PremiumCard title="Monitoring map" subtitle="Interactive Leaflet map of Miami with searched addresses and FEMA flood-zone designations.">
+              <FloodGuardMap searchedResult={mapResult} savedLocations={savedLocations} />
             </PremiumCard>
           </section>
 
