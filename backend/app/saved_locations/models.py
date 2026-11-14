@@ -15,6 +15,7 @@ class SavedLocationCreate(SQLModel):
 class SavedLocation(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     owner_type: str = Field(index=True)
+    user_id: str | None = Field(default=None, index=True)
     label: str
     address: str
     latitude: float | None = Field(default=None)
