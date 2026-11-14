@@ -1,3 +1,5 @@
+import { privateHeaders } from './auth'
+
 export type OwnerType = 'property' | 'vehicle'
 
 export interface SavedLocation {
@@ -193,7 +195,7 @@ const tidesLookupUrl = `${apiBaseUrl}/api/v1/tides/lookup`
 async function readResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const payload = await response.json().catch(() => null) as { detail?: string } | null
-    if (response.status === 401 || response.status === 503 && payload?.detail?.includes('auth not configured')) {
+    if (response.status === 401 || response.status === 503 && payload?.detail?.includes('authentication not configured')) {
       throw new SavedLocationsAuthError(payload?.detail)
     }
     throw new Error(payload?.detail || `Request failed (${response.status})`)
@@ -207,29 +209,27 @@ async function readResponse<T>(response: Response): Promise<T> {
  * not frontend code. */
 export class SavedLocationsAuthError extends Error {
   constructor(detail?: string) {
-    super(
-      detail?.includes('not configured')
-        ? 'Saved locations are disabled: SAVED_LOCATIONS_API_KEY is not configured on the backend deployment.'
-        : 'Saved locations require a server-side API key. The browser cannot (and must not) hold this key — configure SAVED_LOCATIONS_API_KEY on the backend deployment.',
-    )
+    super(detail?.includes('not configured')
+      ? 'Account login is not configured yet on the server.'
+      : 'Please sign in to manage private properties and vehicles.')
     this.name = 'SavedLocationsAuthError'
   }
 }
 
 export async function getSavedLocations(ownerType: OwnerType): Promise<SavedLocation[]> {
-  return readResponse<SavedLocation[]>(await fetch(`${baseUrl}?owner_type=${ownerType}`))
+  return readResponse<SavedLocation[]>(await fetch(`${baseUrl}?owner_type=${ownerType}`, { headers: await privateHeaders() }))
 }
 
 export async function createSavedLocation(location: Omit<SavedLocation, 'id' | 'created_at'>): Promise<SavedLocation> {
   return readResponse<SavedLocation>(await fetch(baseUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...await privateHeaders() },
     body: JSON.stringify(location),
   }))
 }
 
 export async function deleteSavedLocation(id: number): Promise<void> {
-  return readResponse<void>(await fetch(`${baseUrl}${id}`, { method: 'DELETE' }))
+  return readResponse<void>(await fetch(`${baseUrl}${id}`, { method: 'DELETE', headers: await privateHeaders() }))
 }
 
 export async function lookupAddress(address: string): Promise<AddressLookupResult> {
@@ -275,7 +275,7 @@ export async function askFloodGuard(params: {
 export async function getMoveMyCarRecommendation(locationId: number, signal?: AbortSignal): Promise<MoveMyCarResult> {
   return readResponse<MoveMyCarResult>(await fetch(moveCarUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...await privateHeaders() },
     body: JSON.stringify({ location_id: locationId }),
     signal,
   }))
