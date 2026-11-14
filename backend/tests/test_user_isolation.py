@@ -46,3 +46,33 @@ def test_move_car_does_not_assess_other_users_vehicle():
         assert res.json()["status"] == "no_location"
 
 
+
+def test_production_private_endpoints_fail_closed_without_auth(monkeypatch):
+    seed()
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    app = create_app()
+    with TestClient(app) as client:
+        assert client.get("/api/v1/saved-locations/").status_code == 503
+        assert client.post("/api/v1/move-car/recommend", json={"location_id": 1}).status_code == 503
+
+
+def test_move_car_cannot_offer_another_users_location():
+    seed()
+    app = create_app()
+    app.dependency_overrides[get_current_user_id] = lambda: USER_A
+
+    class Zone:
+        designation = "AE"
+    class Tides:
+        next_high_tide = None
+        king_tide_watch = type("King", (), {"active": False})()
+    class Weather:
+        active_alerts = []
+    with TestClient(app) as client:
+        with patch("app.move_car.service.arcgis_fema_flood_zones", new=AsyncMock(return_value=(Zone(), {}, "fema.gov"))), \\
+             patch("app.move_car.service.get_tides", new=AsyncMock(return_value=Tides())), \\
+             patch("app.move_car.service.get_weather_for_coordinates", new=AsyncMock(return_value=Weather())):
+            response = client.post("/api/v1/move-car/recommend", json={"location_id": 1})
+    assert response.status_code == 200
+    assert response.json()["candidates"] == []
