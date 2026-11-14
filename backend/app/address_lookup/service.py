@@ -108,23 +108,119 @@ async def arcgis_fema_flood_zones(
     )
 
 
+def _ring_signed_area(ring: list[list[float]]) -> float:
+    """Return the signed area of a closed ring using the shoelace formula.
+
+    Positive → counter-clockwise. Negative → clockwise.
+    """
+    area = 0.0
+    n = len(ring)
+    for i in range(n):
+        x1, y1 = ring[i]
+        x2, y2 = ring[(i + 1) % n]
+        area += (x1 * y2) - (x2 * y1)
+    return area / 2.0
+
+
+def _point_in_ring(px: float, py: float, ring: list[list[float]]) -> bool:
+    """Ray-casting point-in-polygon test for a single ring."""
+    inside = False
+    j = len(ring) - 1
+    for i in range(len(ring)):
+        xi, yi = ring[i]
+        xj, yj = ring[j]
+        if ((yi > py) != (yj > py)) and (px < (xj - xi) * (py - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+def _ring_contains(ring: list[list[float]], point: list[float]) -> bool:
+    """Return whether the first vertex of `point_ring` lies inside `ring`."""
+    return _point_in_ring(point[0], point[1], ring)
+
+
+def _classify_rings(rings: list[list[list[float]]]) -> tuple[list[list[list[float]]], list[list[list[float]]]]:
+    """Classify rings into exteriors and holes using winding order + containment.
+
+    If the ring set has mixed winding signs, CCW (positive area) = exterior and
+    CW (negative area) = hole. If all rings share the same sign (some ArcGIS
+    services emit everything CCW), fall back to geometric containment: sort by
+    descending absolute area; the largest ring is an exterior; any ring fully
+    contained by a smaller ring is a hole of the smallest containing exterior.
+    """
+    if not rings:
+        return [], []
+
+    areas = [(r, _ring_signed_area(r)) for r in rings]
+    pos = [r for r, a in areas if a >= 0]
+    neg = [r for r, a in areas if a < 0]
+
+    if pos and neg:
+        # Mixed signs — trust winding order.
+        return pos, neg
+
+    # All same sign — use containment.
+    # Sort by descending absolute area; largest = exterior candidates.
+    sorted_rings = sorted(rings, key=lambda r: abs(_ring_signed_area(r)), reverse=True)
+
+    exteriors: list[list[list[float]]] = []
+    holes: list[list[list[float]]] = []
+
+    for ring in sorted_rings:
+        # A ring is a hole if it is contained by any already-classified exterior.
+        parent = None
+        for ext in exteriors:
+            if _ring_contains(ext, ring[0]):
+                parent = ext
+                break
+        if parent is not None:
+            holes.append(ring)
+        else:
+            exteriors.append(ring)
+
+    return exteriors, holes
+
+
 def _esri_geometry_to_geojson(esri_geom: Optional[dict[str, Any]]) -> dict[str, Any]:
     """Convert an ArcGIS JSON geometry (rings/paths) to a GeoJSON geometry.
 
-    Esri rings are clockwise-ordered outer rings followed by counter-clockwise holes;
-    GeoJSON polygons expect the opposite winding order. We reverse each ring so the
-    frontend renders correct fills without relying on Leaflet's winding tolerance.
+    Classifies rings into exteriors and holes using winding order when available,
+    falling back to geometric containment when all rings share the same winding
+    direction (some ArcGIS services emit everything CCW). Multiple exterior rings
+    produce a MultiPolygon; each hole is assigned to its containing exterior.
+    All rings are reversed so output follows GeoJSON CCW-exterior / CW-hole
+    convention, which Leaflet renders correctly.
     """
     if not esri_geom:
         return {"type": "Polygon", "coordinates": []}
 
     rings = esri_geom.get("rings")
     if rings is not None:
-        # Reverse winding order for every ring (Esri CW → GeoJSON CCW).
-        reversed_rings = [list(reversed(ring)) for ring in rings]
-        # A single ring is a simple Polygon; multiple rings are a Polygon with holes
-        # (outer ring first, then interior holes per the GeoJSON spec).
-        return {"type": "Polygon", "coordinates": reversed_rings}
+        exteriors, holes = _classify_rings(rings)
+
+        if not exteriors:
+            return {"type": "Polygon", "coordinates": []}
+
+        # Reverse all rings to swap winding direction for GeoJSON output.
+        rev_ext = [list(reversed(r)) for r in exteriors]
+        rev_holes = [list(reversed(r)) for r in holes]
+
+        if len(rev_ext) == 1:
+            assigned_holes = [h for h in rev_holes if _point_in_ring(h[0][0], h[0][1], rev_ext[0])]
+            return {"type": "Polygon", "coordinates": [rev_ext[0]] + assigned_holes}
+
+        # Multiple exteriors → MultiPolygon. Assign each hole to the exterior
+        # that contains its first vertex.
+        polygons: list[list[list[list[float]]]] = []
+        for ext in rev_ext:
+            poly_rings = [ext]
+            for h in rev_holes:
+                if _point_in_ring(h[0][0], h[0][1], ext):
+                    poly_rings.append(h)
+            polygons.append(poly_rings)
+
+        return {"type": "MultiPolygon", "coordinates": polygons}
 
     paths = esri_geom.get("paths")
     if paths is not None:

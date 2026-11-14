@@ -21,52 +21,129 @@ def test_esri_empty_dict_returns_empty_polygon() -> None:
     assert result == {"type": "Polygon", "coordinates": []}
 
 
-def test_esri_single_ring_polygon() -> None:
-    """A single-ring Esri polygon → GeoJSON Polygon with one ring, reversed winding."""
-    esri = {"rings": [[[-80.2, 25.77], [-80.19, 25.77], [-80.19, 25.78], [-80.2, 25.78], [-80.2, 25.77]]]}
+def test_esri_single_ccw_ring_is_exterior() -> None:
+    """A single CCW ring (positive area) → GeoJSON Polygon with one CW ring."""
+    # CCW square: shoelace gives positive area
+    ccw = [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]
+    esri = {"rings": [ccw]}
     result = _esri_geometry_to_geojson(esri)
     assert result["type"] == "Polygon"
-    # 1 ring (outer), 5 vertices
     assert len(result["coordinates"]) == 1
     assert len(result["coordinates"][0]) == 5
-    # First vertex of reversed ring is the last vertex of original
-    assert result["coordinates"][0][0] == [-80.2, 25.77]
-    assert result["coordinates"][0][1] == [-80.2, 25.78]
-
-
-def test_esri_polygon_with_hole() -> None:
-    """Esri polygon with 2 rings (outer + hole) → GeoJSON Polygon with 2 rings.
-
-    GeoJSON spec: Polygon.coordinates = [outer_ring, hole1, hole2, ...].
-    The outer ring is CCW and the holes are CW after reversal.
-    """
-    outer = [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]
-    hole = [[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]
-    esri = {"rings": [outer, hole]}
-    result = _esri_geometry_to_geojson(esri)
-    assert result["type"] == "Polygon"
-    # 2 rings: outer + hole
-    assert len(result["coordinates"]) == 2
-    # Outer ring reversed: first vertex is [0, 0] (was last in Esri CW order)
+    # Reversed to CW for GeoJSON output
     assert result["coordinates"][0][0] == [0, 0]
     assert result["coordinates"][0][1] == [0, 10]
-    # Hole ring reversed similarly
-    assert result["coordinates"][1][0] == [2, 2]
-    assert result["coordinates"][1][1] == [2, 8]
 
 
-def test_esri_polygon_with_multiple_holes() -> None:
-    """3 rings → Polygon with outer + 2 holes."""
-    outer = [[0, 0], [20, 0], [20, 20], [0, 20], [0, 0]]
-    hole1 = [[2, 2], [6, 2], [6, 6], [2, 6], [2, 2]]
-    hole2 = [[10, 10], [16, 10], [16, 16], [10, 16], [10, 10]]
-    esri = {"rings": [outer, hole1, hole2]}
+def test_esri_single_cw_ring_fallback_to_containment() -> None:
+    """Single CW ring with no mixed sign → containment fallback treats it as exterior."""
+    cw = [[0, 0], [0, 10], [10, 10], [10, 0], [0, 0]]
+    esri = {"rings": [cw]}
+    result = _esri_geometry_to_geojson(esri)
+    # All same sign → containment fallback; largest ring becomes exterior
+    assert result["type"] == "Polygon"
+    assert len(result["coordinates"]) == 1
+
+
+def test_esri_ccw_exterior_with_cw_hole() -> None:
+    """CCW exterior + CW hole → GeoJSON Polygon[exterior, hole] with reversed winding.
+
+    Esri/OGC convention used by this service: CCW (positive area) = exterior,
+    CW (negative area) = hole. After reversal: exterior becomes CW, hole becomes CCW.
+    """
+    # CCW exterior (square 0..20): positive area
+    ext_ccw = [[0, 0], [20, 0], [20, 20], [0, 20], [0, 0]]
+    # CW hole (square 4..16): negative area
+    hole_cw = [[4, 4], [4, 16], [16, 16], [16, 4], [4, 4]]
+    esri = {"rings": [ext_ccw, hole_cw]}
     result = _esri_geometry_to_geojson(esri)
     assert result["type"] == "Polygon"
-    assert len(result["coordinates"]) == 3
-    assert len(result["coordinates"][0]) == 5  # outer
-    assert len(result["coordinates"][1]) == 5  # hole1
-    assert len(result["coordinates"][2]) == 5  # hole2
+    assert len(result["coordinates"]) == 2
+    # Exterior reversed to CW
+    assert result["coordinates"][0][0] == [0, 0]
+    assert result["coordinates"][0][1] == [0, 20]
+    # Hole reversed to CCW
+    assert result["coordinates"][1][0] == [4, 4]
+    assert result["coordinates"][1][1] == [16, 4]
+
+
+def test_esri_hole_before_exterior_in_array() -> None:
+    """Rings are not assumed ordered; classification uses winding, not position."""
+    ext_ccw = [[0, 0], [30, 0], [30, 30], [0, 30], [0, 0]]
+    hole_cw = [[5, 5], [5, 25], [25, 25], [25, 5], [5, 5]]
+    # Hole listed first — must still produce Polygon[exterior, hole]
+    esri = {"rings": [hole_cw, ext_ccw]}
+    result = _esri_geometry_to_geojson(esri)
+    assert result["type"] == "Polygon"
+    assert len(result["coordinates"]) == 2
+    # First coordinate set is always the exterior
+    assert len(result["coordinates"][0]) == 5  # exterior
+    assert len(result["coordinates"][1]) == 5  # hole
+
+
+def test_esri_multiple_holes_one_exterior() -> None:
+    """One CCW exterior + two CW holes → Polygon with 3 rings."""
+    ext_ccw = [[0, 0], [40, 0], [40, 40], [0, 40], [0, 0]]
+    h1_cw = [[2, 2], [2, 12], [12, 12], [12, 2], [2, 2]]
+    h2_cw = [[20, 20], [20, 35], [35, 35], [35, 20], [20, 20]]
+    esri = {"rings": [ext_ccw, h1_cw, h2_cw]}
+    result = _esri_geometry_to_geojson(esri)
+    assert result["type"] == "Polygon"
+    assert len(result["coordinates"]) == 3  # exterior + 2 holes
+
+
+def test_esri_two_separate_exteriors_produces_multipolygon() -> None:
+    """Two CCW rings that do not contain each other → MultiPolygon with 2 polygons."""
+    ext1_ccw = [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]
+    ext2_ccw = [[20, 20], [30, 20], [30, 30], [20, 30], [20, 20]]
+    esri = {"rings": [ext1_ccw, ext2_ccw]}
+    result = _esri_geometry_to_geojson(esri)
+    assert result["type"] == "MultiPolygon"
+    assert len(result["coordinates"]) == 2
+    # Each polygon has exactly one ring (no holes)
+    assert len(result["coordinates"][0]) == 1
+    assert len(result["coordinates"][1]) == 1
+
+
+def test_esri_two_exteriors_each_with_own_hole() -> None:
+    """Two CCW exteriors each containing a CW hole → MultiPolygon[[ext,h],[ext,h]]."""
+    e1_ccw = [[0, 0], [15, 0], [15, 15], [0, 15], [0, 0]]
+    h1_cw = [[3, 3], [3, 12], [12, 12], [12, 3], [3, 3]]
+    e2_ccw = [[25, 25], [40, 25], [40, 40], [25, 40], [25, 25]]
+    h2_cw = [[28, 28], [28, 37], [37, 37], [37, 28], [28, 28]]
+    esri = {"rings": [e1_ccw, h1_cw, e2_ccw, h2_cw]}
+    result = _esri_geometry_to_geojson(esri)
+    assert result["type"] == "MultiPolygon"
+    assert len(result["coordinates"]) == 2
+    # Each polygon: exterior + its assigned hole
+    assert len(result["coordinates"][0]) == 2  # e1 + h1
+    assert len(result["coordinates"][1]) == 2  # e2 + h2
+
+
+def test_esri_hole_assigned_by_containment_not_position() -> None:
+    """A hole inside exterior B but listed after exterior A goes to B via containment."""
+    e1_ccw = [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]
+    e2_ccw = [[50, 50], [70, 50], [70, 70], [50, 70], [50, 50]]
+    # This hole is inside e2 despite being listed last
+    h_cw = [[55, 55], [55, 65], [65, 65], [65, 55], [55, 55]]
+    esri = {"rings": [e1_ccw, e2_ccw, h_cw]}
+    result = _esri_geometry_to_geojson(esri)
+    assert result["type"] == "MultiPolygon"
+    # e1 has no holes
+    assert len(result["coordinates"][0]) == 1
+    # e2 gets the hole
+    assert len(result["coordinates"][1]) == 2
+
+
+def test_esri_all_same_sign_uses_containment() -> None:
+    """All rings same sign → containment fallback; non-overlapping rings become separate exteriors."""
+    r1_cw = [[0, 0], [0, 10], [10, 10], [10, 0], [0, 0]]
+    r2_cw = [[20, 20], [20, 30], [30, 30], [30, 20], [20, 20]]
+    esri = {"rings": [r1_cw, r2_cw]}
+    result = _esri_geometry_to_geojson(esri)
+    # Neither contains the other → both classified as exteriors → MultiPolygon
+    assert result["type"] == "MultiPolygon"
+    assert len(result["coordinates"]) == 2
 
 
 def test_esri_paths_to_multilinestring() -> None:
@@ -89,7 +166,8 @@ def test_esri_multipoint() -> None:
 
 def test_esri_rings_take_precedence_over_paths() -> None:
     """When both rings and paths are present, rings win."""
-    esri = {"rings": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]], "paths": [[[2, 2], [3, 3]]]}
+    ccw = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]
+    esri = {"rings": [ccw], "paths": [[[2, 2], [3, 3]]]}
     result = _esri_geometry_to_geojson(esri)
     assert result["type"] == "Polygon"
 
@@ -98,11 +176,11 @@ def test_esri_rings_take_precedence_over_paths() -> None:
 # Integration tests for the overlay endpoint
 # ---------------------------------------------------------------------------
 
-# Esri JSON responses (f=json) with rings geometry and attributes.
 _MOCK_ESRI_PAGE_1 = {
     "features": [
         {
             "attributes": {"OBJECTID": 1, "FZONE": "AE", "ZONESUBTY": " ", "ELEV": 9.0},
+            # CCW ring (exterior, positive area)
             "geometry": {"rings": [[[-80.2, 25.77], [-80.19, 25.77], [-80.19, 25.78], [-80.2, 25.78], [-80.2, 25.77]]]},
         },
         {
@@ -148,7 +226,6 @@ def test_overlay_returns_geojson_features() -> None:
     assert data["exceeded_transfer_limit"] is False
     assert len(data["features"]) == 3
     assert data["features"][0]["properties"]["FZONE"] == "AE"
-    # Esri rings converted to GeoJSON polygon coordinates
     assert data["features"][0]["geometry"]["type"] == "Polygon"
     assert len(data["features"][0]["geometry"]["coordinates"][0]) == 5
 
