@@ -42,6 +42,12 @@ function formatFEMAAttribute(value: unknown): string {
   return String(value)
 }
 
+// GIS service attributes are untrusted text, even when sourced from a government server.
+// Leaflet popup.setContent() accepts raw HTML, so escape every interpolated attribute.
+function escapeHTML(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char)
+}
+
 interface MapMarkerData {
   id: string
   lat: number
@@ -110,9 +116,9 @@ function FEMAOverlayLayer({ map, enabled }: { map: L.Map; enabled: boolean }) {
             const props = (feature.properties ?? {}) as Record<string, unknown>
             const popup = L.popup({ className: 'fema-popup' }).setContent(`
               <div class="text-sm">
-                <p class="font-semibold text-white mb-1">FEMA Flood Zone: ${formatFEMAAttribute(props.FZONE)}</p>
-                <p class="text-slate-300">Zone subtype: ${formatFEMAAttribute(props.ZONESUBTY)}</p>
-                <p class="text-slate-300">Elevation: ${formatFEMAAttribute(props.ELEV)} ft</p>
+                <p class="font-semibold text-white mb-1">FEMA Flood Zone: ${escapeHTML(formatFEMAAttribute(props.FZONE))}</p>
+                <p class="text-slate-300">Zone subtype: ${escapeHTML(formatFEMAAttribute(props.ZONESUBTY))}</p>
+                <p class="text-slate-300">Elevation: ${escapeHTML(formatFEMAAttribute(props.ELEV))} ft</p>
                 <p class="text-slate-500 mt-2 text-xs">Mapped flood hazard, not real-time flooding.</p>
               </div>
             `)
