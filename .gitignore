@@ -1,0 +1,18 @@
+# Python
+backend/venv/
+backend/__pycache__/
+backend/.pytest_cache/
+*.py[cod]
+
+# Local application data
+backend/*.db
+floodguard_miami.db
+
+# Node / Vite
+frontend/node_modules/
+frontend/dist/
+
+# Environment files
+.env
+.env.*
+!.env.example
