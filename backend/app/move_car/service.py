@@ -21,6 +21,7 @@ _HIGH_RISK_ZONES = {"A", "AE", "AH", "AO", "VE", "V"}
 # Candidate zones that are never surfaced as recommendations — either not
 # land-based flood zones, or lacking a definitive classification.
 _EXCLUDED_CANDIDATE_ZONES = {"OPEN WATER", "", None, "UNMATCHED", "UNCLASSIFIED"}
+_LOWER_MAPPED_HAZARD_ZONES = {"X"}  # Zone D is undetermined, not evidence of low hazard
 
 
 def _config_from_env() -> LookupConfig:
@@ -187,7 +188,7 @@ async def assess_and_recommend(request: MoveMyCarRequest, session, *, user_id: s
 
         cand_zone = normalized
         vehicle_zone = fema_zone.upper() if fema_zone else None
-        lower_risk = cand_zone not in _HIGH_RISK_ZONES and vehicle_zone in _HIGH_RISK_ZONES
+        lower_risk = cand_zone in _LOWER_MAPPED_HAZARD_ZONES and vehicle_zone in _HIGH_RISK_ZONES
         if not lower_risk:
             continue  # Only show a strictly lower mapped hazard alternative.
         note = (
@@ -209,7 +210,7 @@ async def assess_and_recommend(request: MoveMyCarRequest, session, *, user_id: s
         status="ok",
         location_id=request.location_id,
         vehicle_label=vehicle.label,
-        recommendation="consider_moving" if candidates else "consider_moving",
+        recommendation="consider_moving",
         risk_factors=risk_factors,
         candidates=candidates,
         disclaimer=DISCLAIMER,
