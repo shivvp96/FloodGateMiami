@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { createSavedLocation, deleteSavedLocation, getSavedLocations, type OwnerType, type SavedLocation } from './api'
+import { createSavedLocation, deleteSavedLocation, getSavedLocations, lookupAddress, lookupTides, lookupWeather, type AddressLookupResult, type OwnerType, type SavedLocation, type TidesResult, type WeatherResult } from './api'
 import { features, type FeatureId } from './features'
 
 function LocationManager({ ownerType }: { ownerType: OwnerType }) {
@@ -207,7 +207,329 @@ function MapPlaceholder() {
   )
 }
 
-function Dashboard({ setActive }: { setActive: (id: FeatureId) => void }) {
+function useWeather(coords: { latitude: number; longitude: number } | null) {
+  const [weather, setWeather] = useState<WeatherResult | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!coords) {
+      setWeather(null)
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+    setError('')
+    lookupWeather(coords.latitude, coords.longitude)
+      .then((result) => { if (!cancelled) setWeather(result) })
+      .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : 'Weather data unavailable.') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [coords?.latitude, coords?.longitude])
+
+  return { weather, loading, error }
+}
+
+function WeatherSummaryCard({ onOpen }: { onOpen: () => void }) {
+  const [lookupResult, setLookupResult] = useState<AddressLookupResult | null>(null)
+  const { weather, loading, error } = useWeather(lookupResult?.coordinates ?? null)
+
+  return (
+    <PremiumCard title="Tide & Weather" subtitle="Official NWS hourly forecast and active alerts for a Miami address.">
+      <div className="flex flex-col gap-3">
+        <form onSubmit={async (event) => {
+          event.preventDefault()
+          const input = (event.currentTarget.elements.namedItem('weather-address') as HTMLInputElement).value.trim()
+          if (!input) return
+          try {
+            setLookupResult(await lookupAddress(input))
+          } catch (err) {
+            // Surface error via weather state below if coordinates missing
+          }
+        }} className="flex flex-col gap-2">
+          <input
+            name="weather-address"
+            defaultValue="111 NW 1st St, Miami, FL 33128"
+            minLength={3}
+            maxLength={240}
+            placeholder="111 NW 1st St, Miami, FL 33128"
+            aria-label="Address for weather"
+            className="min-w-0 rounded-xl border border-slate-600 bg-ink-950 px-3 py-2.5 text-white outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-ocean-400"
+          />
+          <button type="submit" className="rounded-xl bg-ocean-400 px-4 py-2.5 font-semibold text-ink-950 hover:bg-ocean-300">
+            Load forecast
+          </button>
+        </form>
+
+        {!lookupResult && !loading && !error ? (
+          <p className="text-sm text-slate-400">Enter an address above to load the official forecast.</p>
+        ) : null}
+
+        {loading ? <p className="text-sm text-slate-400">Loading NWS forecast…</p> : null}
+        {error ? <p className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-2 text-sm text-rose-200">{error}</p> : null}
+
+        {weather ? (
+          <div className="rounded-2xl bg-ink-950 p-3 ring-1 ring-slate-700/80">
+            <p className="text-sm text-slate-400">Status</p>
+            <p className={`font-semibold ${weather.status === 'flood_alerts' ? 'text-rose-300' : weather.status === 'unavailable' || weather.status === 'stale' ? 'text-amber-300' : 'text-emerald-300'}`}>
+              {weather.status === 'flood_alerts' ? 'Flood-related alerts active' : weather.status === 'no_alerts' ? 'No active alerts' : weather.status === 'unavailable' ? 'Forecast unavailable' : 'Data stale'}
+            </p>
+            {weather.hourly_periods.length > 0 ? (
+              <>
+                <p className="mt-2 text-sm text-slate-400">Next hour</p>
+                <p className="text-sm text-white">{weather.hourly_periods[0].short_forecast} — {weather.hourly_periods[0].temperature}°{weather.hourly_periods[0].temperature_unit}</p>
+              </>
+            ) : null}
+            <p className="mt-2 text-xs text-slate-500">Source: {weather.source}</p>
+          </div>
+        ) : null}
+      </div>
+      <button
+        onClick={onOpen}
+        className="mt-4 w-full rounded-2xl bg-ink-900 px-4 py-3 text-left font-semibold text-white ring-1 ring-slate-700/80 hover:bg-white/5"
+      >
+        View full weather section
+      </button>
+    </PremiumCard>
+  )
+}
+
+function useTides() {
+  const [tides, setTides] = useState<TidesResult | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  function load() {
+    setLoading(true)
+    setError('')
+    lookupTides()
+      .then(setTides)
+      .catch((err) => setError(err instanceof Error ? err.message : 'Tide data unavailable.'))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => { void load() }, [])
+
+  return { tides, loading, error, reload: load }
+}
+
+function TidesPanel({ showDetail }: { showDetail?: boolean }) {
+  const { tides, loading, error, reload } = useTides()
+
+  return (
+    <section className="rounded-3xl border border-slate-700/80 bg-ink-900 p-6">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold text-white">NOAA tides · Virginia Key</h2>
+        <button onClick={() => reload()} className="text-sm font-medium text-ocean-300 hover:text-sky-200">Refresh</button>
+      </div>
+      <p className="mt-1 text-sm text-slate-400">Station 8723214 · MLLW · feet · NOAA CO-OPS</p>
+
+      {loading ? <p className="mt-5 text-slate-400">Loading tide data…</p> : null}
+      {error ? <p className="mt-4 rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">{error}</p> : null}
+
+      {tides ? (
+        <div className="mt-4 grid gap-4">
+          {tides.status === 'unavailable' ? (
+            <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">{tides.message ?? 'NOAA tide data is unavailable.'}</p>
+          ) : null}
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="rounded-2xl bg-ink-950 p-3 ring-1 ring-slate-700/70">
+              <p className="text-sm text-slate-400">Latest observed water level</p>
+              {tides.current_water_level ? (
+                <>
+                  <p className="text-2xl font-bold text-white">{tides.current_water_level.value.toFixed(2)} <span className="text-base font-normal">{tides.current_water_level.units} {tides.current_water_level.datum}</span></p>
+                  <p className="text-xs text-slate-500">{new Date(tides.current_water_level.timestamp).toLocaleString()}</p>
+                </>
+              ) : (
+                <p className="text-sm text-slate-400">No current observation available.</p>
+              )}
+            </div>
+
+            <div className="rounded-2xl bg-ink-950 p-3 ring-1 ring-slate-700/70">
+              <p className="text-sm text-slate-400">Next predicted high tide</p>
+              {tides.next_high_tide ? (
+                <>
+                  <p className="text-2xl font-bold text-white">{tides.next_high_tide.value.toFixed(2)} <span className="text-base font-normal">{tides.next_high_tide.units}</span></p>
+                  <p className="text-xs text-slate-500">{new Date(tides.next_high_tide.timestamp).toLocaleString()}</p>
+                </>
+              ) : (
+                <p className="text-sm text-slate-400">No upcoming high tide in forecast.</p>
+              )}
+            </div>
+          </div>
+
+          {tides.comparison ? (
+            <div className="rounded-2xl bg-ink-950 p-3 ring-1 ring-slate-700/70">
+              <p className="text-sm text-slate-400">Observation vs prediction</p>
+              <p className="text-sm text-white">Observed {tides.comparison.observed_value.toFixed(2)} ft · Predicted {tides.comparison.predicted_value.toFixed(2)} ft · Difference <span className={tides.comparison.difference > 0.5 ? 'text-rose-300' : 'text-emerald-300'}>{tides.comparison.difference > 0 ? '+' : ''}{tides.comparison.difference.toFixed(2)} ft</span></p>
+              <p className="text-xs text-slate-500">Compared at {new Date(tides.comparison.timestamp).toLocaleString()}</p>
+            </div>
+          ) : null}
+
+          <div className={`rounded-2xl p-3 ring-1 ${tides.king_tide_watch.active ? 'bg-rose-500/10 ring-rose-500/40' : 'bg-emerald-500/5 ring-emerald-500/30'}`}>
+            <p className={`font-semibold ${tides.king_tide_watch.active ? 'text-rose-200' : 'text-emerald-200'}`}>King Tide Watch</p>
+            <p className="text-sm text-slate-300">{tides.king_tide_watch.message}</p>
+            {tides.king_tide_watch.next_high_tides_above_threshold.length > 0 ? (
+              <ul className="mt-2 space-y-1">
+                {tides.king_tide_watch.next_high_tides_above_threshold.map((t) => (
+                  <li key={t.timestamp} className="text-sm text-white">{t.value.toFixed(2)} ft · {new Date(t.timestamp).toLocaleString()}</li>
+                ))}
+              </ul>
+            ) : null}
+            <p className="mt-2 text-xs text-slate-500">Threshold: {tides.king_tide_watch.threshold_value} {tides.king_tide_watch.threshold_units}. {tides.king_tide_watch.threshold_source}</p>
+          </div>
+
+          {showDetail && tides.upcoming_high_tides.length > 0 ? (
+            <div>
+              <p className="text-sm font-semibold text-white">Upcoming high tides</p>
+              <ul className="mt-2 space-y-1">
+                {tides.upcoming_high_tides.map((t) => (
+                  <li key={t.timestamp} className="text-sm text-slate-300">{t.value.toFixed(2)} ft · {new Date(t.timestamp).toLocaleString()}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(tides.source_urls).map(([label, url]) => (
+              <a key={label} href={url} target="_blank" rel="noreferrer" className="text-sm font-semibold text-ocean-300 hover:text-sky-200">NOAA {label} source →</a>
+            ))}
+          </div>
+          <p className="text-xs text-slate-500">Retrieved {new Date(tides.retrieved_at).toLocaleString()}</p>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function WeatherDetail({ result }: { result: AddressLookupResult }) {
+  const { weather, loading, error } = useWeather(result.coordinates)
+
+  return (
+    <main className="w-full px-5 py-7 sm:px-8 lg:py-10">
+      <div className="mx-auto w-full max-w-6xl">
+        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-tide-400">FloodGuard Miami</p>
+        <h1 className="mt-3 text-3xl font-bold tracking-tight text-white sm:text-4xl">Tide & Weather</h1>
+        <p className="mt-3 max-w-2xl text-slate-300">
+          Official NWS forecast and NOAA CO-OPS tides for {result.matched_address}.
+        </p>
+
+        {loading ? <p className="mt-6 text-slate-400">Loading NWS forecast…</p> : null}
+        {error ? <p className="mt-6 rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">{error}</p> : null}
+
+        {weather ? (
+          <div className="mt-6 grid gap-6 lg:grid-cols-2">
+            <section className="rounded-3xl border border-slate-700/80 bg-ink-900 p-6">
+              <h2 className="text-lg font-semibold text-white">Hourly forecast</h2>
+              {weather.hourly_periods.length === 0 ? (
+                <p className="mt-3 text-sm text-slate-400">No forecast periods returned.</p>
+              ) : (
+                <ul className="mt-3 space-y-3">
+                  {weather.hourly_periods.map((period) => (
+                    <li key={period.number} className="rounded-2xl bg-ink-950 p-3 ring-1 ring-slate-700/70">
+                      <p className="font-semibold text-white">{period.short_forecast}</p>
+                      <p className="text-sm text-slate-300">{period.temperature}°{period.temperature_unit} · Wind {period.wind_speed} {period.wind_direction} · Rain chance {period.precipitation_chance ?? 0}%</p>
+                      <p className="text-xs text-slate-500">{new Date(period.start_time).toLocaleString()}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section className="rounded-3xl border border-slate-700/80 bg-ink-900 p-6">
+              <h2 className="text-lg font-semibold text-white">Active alerts</h2>
+              {weather.active_alerts.length === 0 ? (
+                <p className="mt-3 text-sm text-emerald-300">No active weather alerts for this location.</p>
+              ) : (
+                <ul className="mt-3 space-y-3">
+                  {weather.active_alerts.map((alert) => (
+                    <li key={alert.id} className={`rounded-2xl p-3 ring-1 ${alert.is_flood_related ? 'bg-rose-500/10 ring-rose-500/40' : 'bg-ink-950 ring-slate-700/70'}`}>
+                      <p className={`font-semibold ${alert.is_flood_related ? 'text-rose-200' : 'text-white'}`}>{alert.event}{alert.is_flood_related ? ' — flood-related' : ''}</p>
+                      <p className="mt-1 text-sm text-slate-300">{alert.headline}</p>
+                      <p className="mt-2 text-xs text-slate-400">Severity: {alert.severity ?? 'unknown'} · Urgency: {alert.urgency ?? 'unknown'}</p>
+                      <a href={alert.source_url} target="_blank" rel="noreferrer" className="mt-2 inline-block text-sm font-semibold text-ocean-300 hover:text-sky-200">Open alert source →</a>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="mt-4 text-xs text-slate-500">Source: {weather.source} · Retrieved {new Date(weather.retrieved_at).toLocaleString()}</p>
+            </section>
+          </div>
+        ) : null}
+
+        <div className="mt-6">
+          <TidesPanel showDetail />
+        </div>
+      </div>
+    </main>
+  )
+}
+
+function AddressSearch({ onResult }: { onResult?: (result: AddressLookupResult) => void }) {
+  const [address, setAddress] = useState('')
+  const [result, setResult] = useState<AddressLookupResult | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setLoading(true)
+    setError('')
+    setResult(null)
+    try {
+      const found = await lookupAddress(address.trim())
+      setResult(found)
+      onResult?.(found)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to look up this address.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <PremiumCard title="Check a Miami address" subtitle="Look up the mapped FEMA flood-zone designation for a geocoded address.">
+      <form onSubmit={submit} className="flex flex-col gap-3 sm:flex-row">
+        <input
+          value={address}
+          onChange={(event) => setAddress(event.target.value)}
+          required
+          minLength={3}
+          maxLength={240}
+          placeholder="111 NW 1st St, Miami, FL 33128"
+          aria-label="Address to look up"
+          className="min-w-0 flex-1 rounded-xl border border-slate-600 bg-ink-950 px-3 py-3 text-white outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-ocean-400"
+        />
+        <button disabled={loading} className="rounded-xl bg-ocean-400 px-5 py-3 font-semibold text-ink-950 hover:bg-ocean-300 disabled:cursor-not-allowed disabled:opacity-60">
+          {loading ? 'Checking…' : 'Check zone'}
+        </button>
+      </form>
+
+      {error ? <p role="alert" className="mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">{error}</p> : null}
+      {result ? (
+        <div className="mt-4 rounded-2xl bg-ink-950 p-4 ring-1 ring-slate-700/80" aria-live="polite">
+          <p className="text-sm text-slate-400">Matched address</p>
+          <p className="mt-1 font-semibold text-white">{result.matched_address}</p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div>
+              <p className="text-sm text-slate-400">FEMA flood zone</p>
+              <p className="mt-1 text-2xl font-bold text-ocean-300">{result.fema_flood_zone.designation ?? 'No mapped feature returned'}</p>
+            </div>
+            <div>
+              <p className="text-sm text-slate-400">Coordinates</p>
+              <p className="mt-1 text-sm text-slate-200">{result.coordinates.latitude.toFixed(6)}, {result.coordinates.longitude.toFixed(6)}</p>
+            </div>
+          </div>
+          <p className="mt-4 text-sm leading-6 text-slate-300">This is a mapped FEMA designation, not a real-time street-flood forecast or risk score.</p>
+          <a href={result.source_url} target="_blank" rel="noreferrer" className="mt-3 inline-block text-sm font-semibold text-ocean-300 hover:text-sky-200">Open official source →</a>
+        </div>
+      ) : null}
+    </PremiumCard>
+  )
+}
+
+function Dashboard({ setActive, onAddressResult }: { setActive: (id: FeatureId) => void; onAddressResult: (result: AddressLookupResult) => void }) {
   return (
     <main className="w-full px-5 py-7 sm:px-8 lg:pb-10 lg:pt-0">
       <div className="mx-auto w-full max-w-7xl">
@@ -275,6 +597,11 @@ function Dashboard({ setActive }: { setActive: (id: FeatureId) => void }) {
             </section>
           </section>
 
+          {/* Public Phase 2.1 address lookup */}
+          <section>
+            <AddressSearch onResult={onAddressResult} />
+          </section>
+
           {/* Monitoring Map (full width) */}
           <section>
             <PremiumCard title="Monitoring map" subtitle="Phase 2 interactive Leaflet map container (placeholder in Phase 1).">
@@ -303,14 +630,7 @@ function Dashboard({ setActive }: { setActive: (id: FeatureId) => void }) {
                 </button>
               </PremiumCard>
 
-              <PremiumCard title="Tide & Weather" subtitle="Forecasts and alerts become live in Phase 2.">
-                <button
-                  onClick={() => setActive('weather')}
-                  className="w-full rounded-2xl bg-ink-900 px-4 py-3 text-left font-semibold text-white ring-1 ring-slate-700/80 hover:bg-white/5"
-                >
-                  View tide & weather section
-                </button>
-              </PremiumCard>
+              <WeatherSummaryCard onOpen={() => setActive('weather')} />
 
               <PremiumCard title="Report Flooding" subtitle="Photo & incident workflows arrive in Phase 4.">
                 <button
@@ -364,9 +684,44 @@ function Dashboard({ setActive }: { setActive: (id: FeatureId) => void }) {
   )
 }
 
+function WeatherPlaceholder() {
+  return (
+    <main className="w-full px-5 py-7 sm:px-8 lg:py-10">
+      <div className="mx-auto w-full max-w-6xl">
+        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-tide-400">FloodGuard Miami</p>
+        <h1 className="mt-3 text-3xl font-bold tracking-tight text-white sm:text-4xl">Tide & Weather</h1>
+        <div className="mt-7 max-w-2xl rounded-3xl border border-slate-700/80 bg-ink-900 p-6">
+          <p className="text-lg text-slate-200">Use the address search on the dashboard to load the official NWS forecast for a Miami-Dade location.</p>
+          <p className="mt-4 text-sm leading-6 text-slate-400">Weather data is tied to a verified address from the Phase 2.1 address lookup.</p>
+        </div>
+      </div>
+    </main>
+  )
+}
+
+function KingTideWatchView() {
+  return (
+    <main className="w-full px-5 py-7 sm:px-8 lg:py-10">
+      <div className="mx-auto w-full max-w-6xl">
+        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-tide-400">FloodGuard Miami</p>
+        <h1 className="mt-3 text-3xl font-bold tracking-tight text-white sm:text-4xl">King Tide Watch</h1>
+        <p className="mt-3 max-w-3xl text-slate-300">
+          Elevated predicted tides at Virginia Key (NOAA CO-OPS station 8723214), measured against a documented local
+          reference threshold. These are tide predictions — they indicate elevated tide conditions, not confirmed street
+          flooding, and are never compared directly with FEMA flood elevations.
+        </p>
+        <div className="mt-6">
+          <TidesPanel showDetail />
+        </div>
+      </div>
+    </main>
+  )
+}
+
 function App() {
   const [active, setActive] = useState<FeatureId>('dashboard')
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const [addressSearchResult, setAddressSearchResult] = useState<AddressLookupResult | null>(null)
 
   const changeActive = (id: FeatureId) => {
     setActive(id)
@@ -441,10 +796,16 @@ function App() {
 
           <main className="min-h-[60vh]">
             {active === 'dashboard'
-              ? <Dashboard setActive={changeActive} />
+              ? <Dashboard setActive={changeActive} onAddressResult={setAddressSearchResult} />
               : active === 'property' || active === 'vehicle'
                 ? <LocationManager ownerType={active} />
-                : <Placeholder id={active} />}
+                : active === 'weather'
+                  ? addressSearchResult
+                    ? <WeatherDetail result={addressSearchResult} />
+                    : <WeatherPlaceholder />
+                  : active === 'king-tide'
+                    ? <KingTideWatchView />
+                    : <Placeholder id={active} />}
 
             <footer className="mt-2 mb-6 w-full px-5 pb-6 text-sm text-slate-500 sm:px-8 lg:px-0">
               FloodGuard Miami · Preparedness information, not an emergency service.

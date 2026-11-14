@@ -7,6 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .db import init_db
 from .saved_locations.routes import router as saved_locations_router
+from .address_lookup.routes import router as address_lookup_router
+from .weather.routes import router as weather_router
+from .tides.routes import router as tides_router
 
 
 @asynccontextmanager
@@ -37,6 +40,9 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     app.include_router(saved_locations_router, prefix="/api/v1/saved-locations", tags=["saved locations"])
+    app.include_router(address_lookup_router, prefix="/api/v1/address", tags=["address lookup"])
+    app.include_router(weather_router, prefix="/api/v1/weather", tags=["weather"])
+    app.include_router(tides_router, prefix="/api/v1/tides", tags=["tides"])
     return app
 
 
