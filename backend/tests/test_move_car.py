@@ -163,6 +163,64 @@ def test_move_car_flood_alert_triggers_recommendation_without_candidates() -> No
     assert "no alternative saved locations" in data["message"]
 
 
+def test_move_car_excludes_open_water_unmatched_unclassified_candidates() -> None:
+    """OPEN WATER, unmatched, unclassified, and missing designations are never surfaced."""
+    reset_database()
+    with TestClient(create_app()) as client:
+        with Session(engine) as session:
+            vehicle = _insert(session, owner_type="vehicle", label="My car", address="B", latitude=25.775, longitude=-80.196)
+            vehicle_id = vehicle.id
+            _insert(session, owner_type="vehicle", label="Beach lot", address="C1", latitude=25.8, longitude=-80.1)
+            _insert(session, owner_type="vehicle", label="Unknown lot", address="C2", latitude=25.85, longitude=-80.15)
+            _insert(session, owner_type="vehicle", label="Valid garage", address="C3", latitude=25.9, longitude=-80.3)
+
+        zone_map = {
+            (25.775, -80.196): "AE",        # vehicle: high risk
+            (25.8, -80.1): "OPEN WATER",    # excluded
+            (25.85, -80.15): "",            # excluded (empty/unmatched)
+            (25.9, -80.3): "X",             # valid low-risk candidate
+        }
+
+        async def _fema(lat, lon, *, config):
+            return _fema_zone(zone_map[(lat, lon)])
+
+        with patch("app.move_car.service.arcgis_fema_flood_zones", new=_fema), \
+             patch("app.move_car.service.get_weather_for_coordinates", new=AsyncMock(return_value=_fake_weather())), \
+             patch("app.move_car.service.get_tides", new=AsyncMock(return_value=_fake_tides())):
+            response = client.post("/api/v1/move-car/recommend", json={"location_id": vehicle_id})
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["recommendation"] == "consider_moving"
+    # Only the valid X-zone candidate surfaces; OPEN WATER and empty are excluded
+    assert len(data["candidates"]) == 1
+    assert data["candidates"][0]["label"] == "Valid garage"
+    assert data["candidates"][0]["fema_zone"] == "X"
+
+
+def test_move_car_all_candidates_excluded_shows_no_alternatives_message() -> None:
+    """When every candidate is OPEN WATER or unclassified, the message says no alternatives."""
+    reset_database()
+    with TestClient(create_app()) as client:
+        with Session(engine) as session:
+            vehicle = _insert(session, owner_type="vehicle", label="My car", address="B", latitude=25.775, longitude=-80.196)
+            vehicle_id = vehicle.id
+            _insert(session, owner_type="vehicle", label="Beach lot", address="C1", latitude=25.8, longitude=-80.1)
+
+        async def _fema(lat, lon, *, config):
+            if (lat, lon) == (25.775, -80.196):
+                return _fema_zone("AE")
+            return _fema_zone("OPEN WATER")
+
+        with patch("app.move_car.service.arcgis_fema_flood_zones", new=_fema), \
+             patch("app.move_car.service.get_weather_for_coordinates", new=AsyncMock(return_value=_fake_weather())), \
+             patch("app.move_car.service.get_tides", new=AsyncMock(return_value=_fake_tides())):
+            response = client.post("/api/v1/move-car/recommend", json={"location_id": vehicle_id})
+    data = response.json()
+    assert data["recommendation"] == "consider_moving"
+    assert data["candidates"] == []
+    assert "no alternative saved locations" in data["message"]
+
+
 def test_move_car_unverifiable_data_returns_insufficient() -> None:
     reset_database()
     import httpx

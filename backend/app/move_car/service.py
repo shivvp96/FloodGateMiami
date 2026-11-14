@@ -17,6 +17,10 @@ DISCLAIMER = (
 # Zones with statutory 1%-annual-chance flood hazard (Special Flood Hazard Area).
 _HIGH_RISK_ZONES = {"A", "AE", "AH", "AO", "VE", "V"}
 
+# Candidate zones that are never surfaced as recommendations — either not
+# land-based flood zones, or lacking a definitive classification.
+_EXCLUDED_CANDIDATE_ZONES = {"OPEN WATER", "", None, "UNMATCHED", "UNCLASSIFIED"}
+
 
 def _config_from_env() -> LookupConfig:
     import os
@@ -173,7 +177,14 @@ async def assess_and_recommend(request: MoveMyCarRequest, session) -> MoveMyCarR
             designation = zone.designation
         except Exception:
             continue  # unverifiable candidate — never surface it
-        cand_zone = designation.upper() if designation else None
+
+        # Exclude OPEN WATER, unmatched, unclassified, or missing designations —
+        # these are not valid land-based flood zones to recommend parking at.
+        normalized = (designation or "").strip().upper()
+        if normalized in _EXCLUDED_CANDIDATE_ZONES:
+            continue
+
+        cand_zone = normalized
         vehicle_zone = fema_zone.upper() if fema_zone else None
         lower_risk = cand_zone not in _HIGH_RISK_ZONES and vehicle_zone in _HIGH_RISK_ZONES
         note = (
