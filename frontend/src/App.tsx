@@ -4,6 +4,7 @@ import L from 'leaflet'
 import { askFloodGuard, createSavedLocation, deleteSavedLocation, fetchFEMAOverlay, getMoveMyCarRecommendation, getSavedLocations, lookupAddress, lookupTides, lookupWeather, type AddressLookupResult, type AskFloodGuardGrounding, type AskFloodGuardResult, type MoveMyCarResult, type OwnerType, type SavedLocation, type TidesResult, type WeatherResult } from './api'
 import { features, type FeatureId } from './features'
 import { subscribeAuth } from './auth'
+import { FamilyFloodPlanView, ReportFloodingView, FloodMemoryView, FloodInsuranceView } from './ExtraFeatures'
 
 // Fix Leaflet default marker icon path for Vite bundling
 const defaultIcon = L.icon({
@@ -1409,7 +1410,15 @@ function App() {
                       ? <MoveMyCarView onOpenVehicles={() => changeActive('vehicle')} />
                       : active === 'king-tide'
                         ? <KingTideWatchView />
-                        : <Placeholder id={active} />}
+                        : active === 'family-plan'
+                          ? <FamilyFloodPlanView />
+                          : active === 'report'
+                            ? <ReportFloodingView />
+                            : active === 'memory'
+                              ? <FloodMemoryView />
+                              : active === 'insurance'
+                                ? <FloodInsuranceView locationResult={addressSearchResult} />
+                                : <Placeholder id={active} />}
 
             <footer className="mt-2 mb-6 w-full px-5 pb-6 text-sm text-slate-500 sm:px-8 lg:px-0">
               FloodGuard Miami · Preparedness information, not an emergency service.
